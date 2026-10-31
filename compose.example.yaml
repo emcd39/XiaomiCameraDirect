@@ -1,0 +1,21 @@
+# MVP: external xiaomi-onvif/go2rtc exposes RTSP+ONVIF; this is OUR orchestration/API layer.
+# Place this on the same LAN as the cameras; host networking is required for Xiaomi discovery.
+# Review firewall: 8099 (API), 8554 (RTSP), 8891 (ONVIF) must be LAN-only.
+services:
+  gateway:
+    build: .
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      XLG_API_TOKEN: ${XLG_API_TOKEN:?Set API token in .env}
+    volumes:
+      - ./config.json:/config/config.json:ro
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/xlg", "-check-config", "-config", "/config/config.json"]
+      interval: 30s
+      timeout: 4s
+      retries: 3

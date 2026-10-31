@@ -1,0 +1,13 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+config.json
+**/__pycache__/
+*.pyc
+*.zip
+build/
+coverage.out
+*.log
+*.pem
+*.key

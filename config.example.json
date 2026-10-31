@@ -1,0 +1,15 @@
+{
+  "listen": "127.0.0.1:8099",
+  "cameras": [
+    {
+      "id": "garden",
+      "name": "Zahrada",
+      "model": "VERIFY_MODEL_FIRST",
+      "rtsp_url": "rtsp://127.0.0.1:8554/garden",
+      "onvif_url": "http://127.0.0.1:8891/onvif/ptz_service",
+      "profile": "garden",
+      "ptz": true,
+      "step": 0.08
+    }
+  ]
+}
