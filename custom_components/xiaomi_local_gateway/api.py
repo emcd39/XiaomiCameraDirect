@@ -37,7 +37,10 @@ class GatewayClient:
 
     async def cameras(self) -> list[dict]:
         result = await self._call("GET", "/v1/cameras")
-        return result["cameras"]
+        cameras = result.get("cameras")
+        if not isinstance(cameras, list):
+            raise GatewayError("Invalid camera inventory response")
+        return cameras
 
     async def ptz_step(self, camera_id: str, direction: str) -> None:
         await self._call("POST", f"/v1/cameras/{camera_id}/ptz/step", {"direction": direction})
