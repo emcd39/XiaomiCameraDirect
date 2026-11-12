@@ -69,6 +69,84 @@ func TestMediaTransportPreferenceMapsCS2VendorToNegotiation(t *testing.T) {
 	}
 }
 
+func TestProviderProfilesPreserveC201IdentityAndBaselineWithoutInventoryFirmware(t *testing.T) {
+	firstDevice := &cloud.Device{Did: "c201-device-a", Name: "C201", Model: supportedModel}
+	secondDevice := &cloud.Device{Did: "c201-device-b", Name: "C201", Model: supportedModel}
+	provider := &Provider{
+		cfg:     Config{Region: "de"},
+		sources: make(map[model.CameraID]*cameraSource),
+		devices: []*cloud.Device{firstDevice, secondDevice},
+		loaded:  time.Now(),
+	}
+
+	cameras, err := provider.Cameras(context.Background())
+	if err != nil {
+		t.Fatalf("Cameras() error = %v", err)
+	}
+	if len(cameras) != 2 {
+		t.Fatalf("Cameras() returned %d entries, want two", len(cameras))
+	}
+	if cameras[0].ID == cameras[1].ID || cameras[0].ID != cameraID(firstDevice.Did) || cameras[1].ID != cameraID(secondDevice.Did) {
+		t.Fatalf("camera identities = %q, %q; want distinct IDs derived from each DID", cameras[0].ID, cameras[1].ID)
+	}
+	for _, camera := range cameras {
+		if camera.ModelID != supportedModel || camera.Firmware != "" || !camera.Selected || !camera.Capabilities.Video || !camera.Capabilities.Snapshot {
+			t.Errorf("C201 baseline changed without inventory firmware: %#v", camera)
+		}
+		if camera.Support == nil || camera.Support.Features["video"].Reason != model.ErrorUnverifiedFirmware {
+			t.Errorf("missing firmware was not represented as unverified: %#v", camera.Support)
+		}
+	}
+	if len(provider.sources) != 2 {
+		t.Fatalf("source count = %d, want separate source per camera identity", len(provider.sources))
+	}
+	match, ok := provider.profileForDevice(firstDevice)
+	if !ok || match.FirmwareKnown || !match.RegionKnown || !match.Supports("video") || match.Supports("audio") {
+		t.Fatalf("missing-firmware profile match = %#v, supported=%t", match, ok)
+	}
+}
+
+func TestProviderDoesNotAdvertiseUnprofiledCandidateModels(t *testing.T) {
+	provider := &Provider{
+		cfg:     Config{Region: "de"},
+		sources: make(map[model.CameraID]*cameraSource),
+		devices: []*cloud.Device{
+			{Did: "candidate-c400", Name: "C400", Model: "chuangmi.camera.039a04"},
+			// The Mi 360's exact model ID has not been identified; this placeholder
+			// deliberately exercises unknown-model behavior without guessing it.
+			{Did: "candidate-mi360", Name: "Mi 360", Model: "xiaomi.camera.unidentified"},
+		},
+		loaded: time.Now(),
+	}
+
+	cameras, err := provider.Cameras(context.Background())
+	if err != nil {
+		t.Fatalf("Cameras() error = %v", err)
+	}
+	if len(cameras) != 2 {
+		t.Fatalf("Cameras() returned %d entries, want both candidates", len(cameras))
+	}
+	for _, camera := range cameras {
+		if camera.Selected || camera.Capabilities.Video || camera.Capabilities.Snapshot || camera.Video.State != model.VideoUnsupported {
+			t.Errorf("unprofiled candidate acquired capabilities: %#v", camera)
+		}
+		if camera.Support == nil || camera.Support.Features["video"].Reason != model.ErrorUnsupportedModel {
+			t.Errorf("unprofiled candidate lacks explicit unsupported state: %#v", camera.Support)
+		}
+	}
+}
+
+func TestProviderProfileRejectsUnknownModelBeforePTZWrite(t *testing.T) {
+	provider, id, source, _, session, _ := newProviderStepFixture(true, true)
+	source.device.Model = "xiaomi.camera.unprofiled"
+	if err := provider.Step(context.Background(), id, "left"); !errors.Is(err, ErrUnsupportedCamera) {
+		t.Fatalf("Step() error = %v, want ErrUnsupportedCamera", err)
+	}
+	if diagnostics, writes, _, _ := session.stats(); diagnostics != 0 || writes != 0 {
+		t.Fatalf("unsupported-model diagnostics/writes = %d/%d, want zero", diagnostics, writes)
+	}
+}
+
 func TestFinishStartClearsClosedStartSignal(t *testing.T) {
 	starting := make(chan struct{})
 	source := &cameraSource{starting: starting}

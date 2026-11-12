@@ -26,11 +26,14 @@ import (
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/backend"
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/model"
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/streamrtsp"
+	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/xiaomi/profiles"
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/xiaomi/protocol/cloud"
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/xiaomi/protocol/stream"
 )
 
-const supportedModel = "xiaomi.camera.c201"
+const supportedModel = profiles.ModelC201
+
+var cameraProfiles = profiles.DefaultRegistry()
 
 const (
 	defaultRTSPListen = ":8554"
@@ -210,7 +213,8 @@ func (p *Provider) CameraDiagnostics(ctx context.Context, id model.CameraID, req
 		if request.Operation == backend.DiagnosticTransportMetadata {
 			return backend.CameraSessionDiagnostics{}, backend.ErrNoActiveCameraSession
 		}
-		if knownDevice.Model != supportedModel {
+		match, supported := p.profileForDevice(knownDevice)
+		if !supported || !match.Supports(profiles.FeatureSessionDiagnostics) {
 			return backend.CameraSessionDiagnostics{Operation: request.Operation, CorrelationID: request.CorrelationID, State: backend.SessionUnsupported, Reason: model.ErrorUnsupportedModel}, nil
 		}
 		return backend.CameraSessionDiagnostics{Operation: request.Operation, CorrelationID: request.CorrelationID, State: backend.SessionIdle}, nil
@@ -577,19 +581,20 @@ func (p *Provider) Cameras(ctx context.Context) ([]model.Camera, error) {
 		if device == nil || !device.IsCamera() {
 			continue
 		}
+		match, supported := p.profileForDevice(device)
 		id := cameraID(device.Did)
 		camera := model.Camera{
 			ID:       id,
 			Name:     cameraName(device),
 			Model:    device.Model,
 			ModelID:  device.Model,
-			Selected: device.Model == supportedModel,
+			Selected: supported && match.Profile.AutoSelect && match.Supports(profiles.FeatureVideo),
 			Video:    model.VideoStatus{State: model.VideoUnsupported, Reason: model.ErrorUnsupportedModel},
 			Control:  model.ControlStatus{State: model.ControlUnsupported},
 		}
-		if device.Model == supportedModel {
-			camera.Capabilities.Video = true
-			camera.Capabilities.Snapshot = true
+		if supported && match.Supports(profiles.FeatureVideo) {
+			camera.Capabilities.Video = match.Supports(profiles.FeatureVideo)
+			camera.Capabilities.Snapshot = match.Supports(profiles.FeatureSnapshot)
 			camera.Support = c201SupportEvidence()
 			source := p.sources[id]
 			if source == nil || source.device.Did != device.Did {
@@ -670,6 +675,22 @@ func unsupportedModelSupportEvidence() *model.CameraSupport {
 	return &model.CameraSupport{SchemaVersion: 1, Features: features}
 }
 
+// profileForDevice resolves only from model ID and the configured account
+// region. The current Xiaomi device-list response does not include firmware,
+// so firmware-gated features stay disabled and the profile exposes only its
+// explicitly listed baseline behavior.
+func (p *Provider) profileForDevice(device *cloud.Device) (profiles.Match, bool) {
+	if device == nil {
+		return profiles.Match{}, false
+	}
+	region := ""
+	if p != nil {
+		region = p.cfg.Region
+	}
+	match, err := cameraProfiles.Resolve(device.Model, "", region)
+	return match, err == nil
+}
+
 func (p *Provider) cameraDevices() ([]*cloud.Device, error) {
 	p.mu.RLock()
 	if time.Since(p.loaded) < 30*time.Second {
@@ -734,7 +755,8 @@ func (p *Provider) CameraSettings(ctx context.Context, id model.CameraID) (backe
 	if device == nil {
 		return backend.CameraSettings{}, ErrCameraNotFound
 	}
-	if device.Model != supportedModel {
+	match, supported := p.profileForDevice(device)
+	if !supported || !match.Supports(profiles.FeatureSettingsRead) {
 		return backend.CameraSettings{}, ErrUnsupportedCamera
 	}
 	props := make([]cloud.MiotProp, 0, len(c201ReadOnlyProperties))
@@ -805,7 +827,11 @@ func (p *Provider) CameraSettings(ctx context.Context, id model.CameraID) (backe
 
 func (p *Provider) Streams(ctx context.Context, id model.CameraID) ([]backend.StreamEndpoint, error) {
 	source := p.source(id)
-	if source == nil || source.device.Model != supportedModel {
+	if source == nil {
+		return nil, ErrUnsupportedCamera
+	}
+	match, supported := p.profileForDevice(source.device)
+	if !supported || !match.Supports(profiles.FeatureVideo) {
 		return nil, ErrUnsupportedCamera
 	}
 	path, err := source.ensurePath(ctx)
@@ -823,7 +849,11 @@ func (p *Provider) Streams(ctx context.Context, id model.CameraID) ([]backend.St
 // bounded lifetime and its diagnostics are discarded to prevent URL leakage.
 func (p *Provider) Snapshot(ctx context.Context, id model.CameraID) ([]byte, error) {
 	source := p.source(id)
-	if source == nil || source.device.Model != supportedModel {
+	if source == nil {
+		return nil, ErrUnsupportedCamera
+	}
+	match, supported := p.profileForDevice(source.device)
+	if !supported || !match.Supports(profiles.FeatureSnapshot) {
 		return nil, ErrUnsupportedCamera
 	}
 	path, err := source.ensureReady(ctx)
@@ -885,12 +915,17 @@ func (p *Provider) Step(ctx context.Context, id model.CameraID, direction string
 		if knownCamera == nil {
 			return ErrCameraNotFound
 		}
-		if knownCamera.Model != supportedModel {
+		match, supported := p.profileForDevice(knownCamera)
+		if !supported || !match.Supports(profiles.FeaturePTZ) {
 			return ErrUnsupportedCamera
 		}
 		return ErrCameraUnavailable
 	}
-	if source.device == nil || source.device.Model != supportedModel {
+	if source.device == nil {
+		return ErrUnsupportedCamera
+	}
+	match, supported := p.profileForDevice(source.device)
+	if !supported || !match.Supports(profiles.FeaturePTZ) {
 		return ErrUnsupportedCamera
 	}
 	if direction != "left" && direction != "right" && direction != "up" && direction != "down" {
@@ -1032,8 +1067,22 @@ func (s *cameraSource) start(path cameraPath, done, starting chan struct{}) {
 		s.failStart(path, done, ErrCameraUnavailable)
 		return
 	}
+	match, supported := s.provider.profileForDevice(s.device)
+	if !supported || !match.Supports(profiles.FeatureVideo) {
+		s.failStart(path, done, ErrUnsupportedCamera)
+		return
+	}
+	if match.Profile.ApplicationProtocol != "MISS" || match.Profile.MediaProtocol != "CS2" || match.Profile.VideoCodec != "H265" {
+		s.failStart(path, done, ErrUnsupportedCamera)
+		return
+	}
 	missSession, err := s.provider.account.MissVendor(s.device.Did)
 	if err != nil || missSession == nil {
+		log.Printf("xiaomi_backend event=session_negotiate result=error")
+		s.failStart(path, done, errors.New("camera session negotiation failed"))
+		return
+	}
+	if missSession.Vendor != match.Profile.Vendor {
 		log.Printf("xiaomi_backend event=session_negotiate result=error")
 		s.failStart(path, done, errors.New("camera session negotiation failed"))
 		return
@@ -1063,10 +1112,10 @@ func (s *cameraSource) start(path cameraPath, done, starting chan struct{}) {
 	opened, err := stream.Open(stream.Config{
 		Host:          host,
 		Transport:     transport,
-		Model:         s.device.Model,
-		Channel:       "0",
-		Quality:       "auto",
-		Audio:         false,
+		Model:         match.Profile.ModelID,
+		Channel:       match.Profile.Channel,
+		Quality:       match.Profile.Quality,
+		Audio:         match.Profile.Audio,
 		DevicePublic:  missSession.DevicePublic,
 		ClientPublic:  missSession.ClientPublic,
 		ClientPrivate: missSession.ClientPrivate,
