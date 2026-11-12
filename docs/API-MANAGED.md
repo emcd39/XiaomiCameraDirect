@@ -99,7 +99,7 @@ Authorization: Bearer <gateway-token>
         "implementation": "implemented",
         "validation": "offline",
         "path": "cloud",
-        "requires_cloud": ["settings_read"],
+        "requires_cloud": ["account_auth", "inventory", "settings_read"],
         "evidence_ref": ".test-env/evidence/test-local-20261112-162635-f49fca83.log#late-settings"
       }
     }
@@ -107,7 +107,7 @@ Authorization: Bearer <gateway-token>
 }
 ```
 
-Schema 1 uses `implementation` values `absent`, `research`, or `implemented`; `validation` values `none`, `offline`, `device`, or `home_assistant`; and `path` values `camera_lan`, `cloud`, `nvr_local`, or `unknown`. `path` names the route declared by the implementation/code review; it is **not** proof from packet capture that all traffic followed that path or that the feature works without internet. `validation` states the evidence level, and `evidence_ref` points to the report or test log. `tested_firmware` is included only when the evidence identifies a firmware version. The `requires_cloud` list names operations such as `account_auth`, `inventory`, `new_session_negotiation`, and `settings_read`; a direct camera stream may still need cloud for session setup. A mock or offline test never becomes `device` evidence by itself.
+Schema 1 uses `implementation` values `absent`, `research`, or `implemented`; `validation` values `none`, `offline`, `device`, or `home_assistant`; and `path` values `camera_lan`, `cloud`, `nvr_local`, or `unknown`. `path` names the route declared by the implementation/code review; it is **not** proof from packet capture that all traffic followed that path or that the feature works without internet. `validation` states the evidence level, and `evidence_ref` points to the report or test log. `tested_firmware` is included only when the evidence identifies a firmware version. The `requires_cloud` list names operations such as `account_auth`, `inventory`, `new_session_negotiation`, and `settings_read`; a direct camera stream still depends on cloud authentication, inventory, and session setup, while settings reads use the cloud directly. A mock or offline test never becomes `device` evidence by itself.
 
 The Xiaomi provider adds this metadata only to the exact C201 model profile. The API removes PTZ/preset evidence if no PTZ provider is installed, and removes settings-read evidence if no settings provider is installed. The HA client ignores unknown schema versions, unknown feature names, and malformed optional feature records while keeping the camera's existing state/capabilities. HA exposes accepted support data as the camera entity's `support` state attribute; it does not create entities for unimplemented functions.
 

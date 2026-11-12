@@ -111,6 +111,12 @@ V prvním vydání lze pravdivě nabídnout lokální média s cloudem pro pří
 
 **Přejímka:** fake session zreprodukuje úspěch i chybu bez kamery a bez nekonečných retry. **Checkpoint:** bezpečně použitelný základ pro nové modely, ne kompletní debugger všech protokolů.
 
+#### Bezpečná HTTP preflight část
+
+`cmd/camera-probe` je první read-only krok A02. Bez `-inventory` provádí jen `GET /healthz` a autorizovaný `GET /v2/info`; `-dry-run` vypíše plán bez jediného síťového požadavku. Před skutečným requestem ověří loopback/private IP gateway, odmítne veřejný hostname/IP, URL userinfo, redirecty a nepřenáší API token v URL. Token čte pouze z předem nastaveného `XLG_API_TOKEN`. Volitelný `-inventory` spustí ještě pouze autorizovaný `GET /v2/cameras`; provider může při něm obnovit inventář Xiaomi účtu v cloudu, proto je tato část explicitní opt-in. Žádná volba nezakládá stream/session, nečte obsah snímku, neposílá PTZ ani jiný zápis.
+
+Report neobsahuje jméno kamery, surové camera ID, IP adresu, RTSP URL, přístupové údaje ani token. Vypisuje zkrácený pseudonym camera ID, model/firmware, capabilities/stav/důvod, známá evidence a deklarovanou třídu endpointu z URL. Tato třída je pouze informace z API, nikoli pozorovaný socket/packet peer. Preflight zatím není transportní probe a neověřuje přímé spojení ke kameře; to vyžaduje další fázi A02/A03.
+
 ### A03 — Doložit a vynutit lokálnost datové cesty
 
 **Závislost:** A02 pro plnou instrumentaci; pasivní měření existující relace může předcházet. **Rozsah:** metadata session/transportu, síťová politika, diagnostické testy a report.

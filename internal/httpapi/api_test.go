@@ -724,7 +724,7 @@ func TestManagedCameraListOnlyAdvertisesAvailableSupportProviders(t *testing.T) 
 			"video":                {Implementation: "implemented", Validation: "device", Path: "camera_lan"},
 			"ptz":                  {Implementation: "implemented", Validation: "device", Path: "camera_lan"},
 			"presets":              {Implementation: "research", Validation: "none", Path: "unknown"},
-			"camera_settings_read": {Implementation: "implemented", Validation: "offline", Path: "cloud", RequiresCloud: []string{"settings_read"}},
+			"camera_settings_read": {Implementation: "implemented", Validation: "offline", Path: "cloud", RequiresCloud: []string{"account_auth", "inventory", "settings_read"}},
 		}},
 	}
 	h := NewWithProviders(config.Config{}, "secret", nil, &fakeCameraProvider{cameras: []model.Camera{camera}}, nil)
