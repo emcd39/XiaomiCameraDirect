@@ -31,7 +31,11 @@ From the repository root:
 
 The standard run executes Go race tests, `go vet`, Python gateway-client tests,
 HA `check_config`, a fresh integration setup, entity checks, gateway outage and
-recovery. Include the optional ONVIF movement check with:
+recovery. It also checks authenticated camera-settings routing, retries after a
+transient `/v2/info` failure, capability gating, and the C201 diagnostic sensor
+and binary-sensor entities. The late-capability scenario creates a second real
+HA config entry through its normal flow and serves a changing gateway response
+from an isolated in-process HTTP mock. Include the optional ONVIF movement check with:
 
 ```powershell
 ./scripts/test-local.ps1 -ExerciseMockPtz

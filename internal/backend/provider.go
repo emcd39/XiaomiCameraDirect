@@ -4,9 +4,11 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/model"
 )
@@ -55,6 +57,26 @@ type StreamProvider interface {
 // image endpoint. A provider can omit snapshots while still supporting RTSP.
 type SnapshotProvider interface {
 	Snapshot(context.Context, model.CameraID) ([]byte, error)
+}
+
+// SettingValue is one allowlisted, read-only MIoT result. Value is left raw so
+// unknown enum values remain visible without being misinterpreted.
+type SettingValue struct {
+	Code  int             `json:"code"`
+	Value json.RawMessage `json:"value,omitempty"`
+}
+
+// CameraSettings contains only model-allowlisted, read-only camera properties.
+// It must never include device IDs, credentials, or arbitrary client-selected
+// MIoT property addresses.
+type CameraSettings struct {
+	ObservedAt time.Time               `json:"observed_at"`
+	Properties map[string]SettingValue `json:"properties"`
+}
+
+// CameraSettingsProvider reads a fixed set of model-specific properties.
+type CameraSettingsProvider interface {
+	CameraSettings(context.Context, model.CameraID) (CameraSettings, error)
 }
 
 // PTZProvider is optional. A video-only provider only needs to implement

@@ -24,11 +24,30 @@ class GatewayClientTests(unittest.IsolatedAsyncioTestCase):
         self.status = 200
         self.managed_body = '{"cameras": []}'
         self.managed_status = 404
+        self.info_body = '{"features": []}'
+        self.info_status = 200
+        self.settings_body = json.dumps({
+            "observed_at": "2026-11-12T12:00:00Z",
+            "properties": {
+                "night_shot": {"code": 0, "value": 2},
+                "motion_detection": {"code": 0, "value": True},
+            },
+        })
+        self.settings_requests = []
 
         async def inventory(request):
             if request.path == "/v2/cameras":
                 return web.Response(text=self.managed_body, status=self.managed_status, content_type="application/json")
             return web.Response(text=self.body, status=self.status, content_type="application/json")
+
+        async def info(request):
+            if request.headers.get("Authorization") != "Bearer test-token":
+                return web.Response(status=401)
+            return web.Response(text=self.info_body, status=self.info_status, content_type="application/json")
+
+        async def settings(request):
+            self.settings_requests.append((request.match_info["camera_id"], request.headers.get("Authorization")))
+            return web.Response(text=self.settings_body, content_type="application/json")
 
         async def snapshot(request):
             if request.headers.get("Authorization") != "Bearer test-token":
@@ -38,6 +57,8 @@ class GatewayClientTests(unittest.IsolatedAsyncioTestCase):
         app = web.Application()
         app.router.add_get("/v1/cameras", inventory)
         app.router.add_get("/v2/cameras", inventory)
+        app.router.add_get("/v2/info", info)
+        app.router.add_get("/v2/cameras/{camera_id}/settings", settings)
         app.router.add_get("/v2/cameras/{camera_id}/snapshot", snapshot)
         self.server = TestServer(app)
         await self.server.start_server()
@@ -107,6 +128,27 @@ class GatewayClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_managed_snapshot_returns_jpeg_with_gateway_authorization(self) -> None:
         self.assertEqual(await self.client.snapshot("c201-test"), b"\xff\xd8\x01\xff\xd9")
+
+    async def test_camera_settings_are_parsed_and_authorized(self) -> None:
+        settings = await self.client.camera_settings("c201-test")
+        self.assertEqual(settings["properties"]["night_shot"], {"code": 0, "value": 2})
+        self.assertEqual(settings["properties"]["motion_detection"], {"code": 0, "value": True})
+        self.assertEqual(self.settings_requests, [("c201-test", "Bearer test-token")])
+
+    async def test_settings_support_check_retries_after_transient_info_failure(self) -> None:
+        self.info_status = 503
+        self.info_body = '{"error":"backend_unavailable"}'
+        self.assertFalse(await self.client.supports_camera_settings())
+
+        self.info_status = 200
+        self.info_body = '{"features":["camera_selection","camera_settings_read"]}'
+        self.assertTrue(await self.client.supports_camera_settings())
+        self.assertEqual(self.settings_requests, [])
+
+    async def test_no_settings_feature_does_not_call_settings_route(self) -> None:
+        self.info_body = '{"features":["camera_selection"]}'
+        self.assertFalse(await self.client.supports_camera_settings())
+        self.assertEqual(self.settings_requests, [])
 
 
 if __name__ == "__main__":

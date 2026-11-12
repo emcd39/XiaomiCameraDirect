@@ -3,10 +3,12 @@
 package xiaomi
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -43,6 +45,7 @@ var (
 	ErrCredentialsInvalid    = errors.New("Xiaomi account authorization failed")
 	ErrCameraNotFound        = errors.New("Xiaomi camera was not found in the loaded inventory")
 	ErrCameraUnavailable     = errors.New("Xiaomi camera is unavailable")
+	ErrInvalidCameraSettings = errors.New("Xiaomi camera returned an invalid settings response")
 	ErrUnsupportedCamera     = errors.New("Xiaomi camera model is not supported")
 	ErrUnsupportedDirection  = errors.New("Xiaomi PTZ direction is not supported")
 )
@@ -300,6 +303,122 @@ func (p *Provider) cameraDevices() ([]*cloud.Device, error) {
 	}
 	log.Printf("xiaomi_backend event=inventory result=ok camera_count=%d", len(devices))
 	return devices, nil
+}
+
+var c201ReadOnlyProperties = []struct {
+	name string
+	siid int
+	piid int
+	kind string
+}{
+	{name: "night_shot", siid: 2, piid: 3, kind: "uint8"},
+	{name: "indicator_light", siid: 4, piid: 1, kind: "bool"},
+	{name: "motion_detection", siid: 5, piid: 1, kind: "bool"},
+	{name: "human_detection", siid: 8, piid: 6, kind: "bool"},
+	{name: "move_detection", siid: 8, piid: 7, kind: "bool"},
+	{name: "pet_detection", siid: 8, piid: 3, kind: "bool"},
+}
+
+type miotPropertyResult struct {
+	Siid  int             `json:"siid"`
+	Piid  int             `json:"piid"`
+	Code  *int            `json:"code"`
+	Value json.RawMessage `json:"value"`
+}
+
+// CameraSettings reads only the fixed C201 property allowlist. It uses the
+// already-loaded account and inventory, never writes MIoT properties, and
+// leaves returned enum values raw for the caller to interpret by the model
+// specification.
+func (p *Provider) CameraSettings(ctx context.Context, id model.CameraID) (backend.CameraSettings, error) {
+	if err := ctx.Err(); err != nil {
+		return backend.CameraSettings{}, err
+	}
+	p.mu.RLock()
+	devices := append([]*cloud.Device(nil), p.devices...)
+	loaded := !p.loaded.IsZero()
+	closed := p.closed
+	p.mu.RUnlock()
+	if closed || !loaded {
+		return backend.CameraSettings{}, ErrCameraUnavailable
+	}
+	var device *cloud.Device
+	for _, candidate := range devices {
+		if candidate != nil && candidate.IsCamera() && cameraID(candidate.Did) == id {
+			device = candidate
+			break
+		}
+	}
+	if device == nil {
+		return backend.CameraSettings{}, ErrCameraNotFound
+	}
+	if device.Model != supportedModel {
+		return backend.CameraSettings{}, ErrUnsupportedCamera
+	}
+	props := make([]cloud.MiotProp, 0, len(c201ReadOnlyProperties))
+	for _, property := range c201ReadOnlyProperties {
+		props = append(props, cloud.MiotProp{Siid: property.siid, Piid: property.piid})
+	}
+	raw, err := p.account.MiotGetContext(ctx, device.Did, props)
+	if err != nil {
+		return backend.CameraSettings{}, ErrCameraUnavailable
+	}
+	var response struct {
+		Result []miotPropertyResult `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil || response.Result == nil {
+		return backend.CameraSettings{}, ErrInvalidCameraSettings
+	}
+	propertySpecs := make(map[[2]int]struct {
+		name string
+		kind string
+	}, len(c201ReadOnlyProperties))
+	for _, property := range c201ReadOnlyProperties {
+		propertySpecs[[2]int{property.siid, property.piid}] = struct {
+			name string
+			kind string
+		}{name: property.name, kind: property.kind}
+	}
+	values := make(map[string]backend.SettingValue, len(c201ReadOnlyProperties))
+	for _, result := range response.Result {
+		property, requested := propertySpecs[[2]int{result.Siid, result.Piid}]
+		if !requested {
+			continue
+		}
+		if result.Code == nil {
+			return backend.CameraSettings{}, ErrInvalidCameraSettings
+		}
+		if _, duplicate := values[property.name]; duplicate {
+			return backend.CameraSettings{}, ErrInvalidCameraSettings
+		}
+		value := append(json.RawMessage(nil), result.Value...)
+		if *result.Code != 0 {
+			value = nil
+		} else if len(value) > 0 && !bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			switch property.kind {
+			case "bool":
+				var boolValue bool
+				if err := json.Unmarshal(value, &boolValue); err != nil {
+					return backend.CameraSettings{}, ErrInvalidCameraSettings
+				}
+			case "uint8":
+				var numericValue int
+				if err := json.Unmarshal(value, &numericValue); err != nil || numericValue < 0 || numericValue > 255 {
+					return backend.CameraSettings{}, ErrInvalidCameraSettings
+				}
+			default:
+				return backend.CameraSettings{}, ErrInvalidCameraSettings
+			}
+		}
+		values[property.name] = backend.SettingValue{Code: *result.Code, Value: value}
+	}
+	if _, present := values["night_shot"]; !present {
+		return backend.CameraSettings{}, ErrInvalidCameraSettings
+	}
+	return backend.CameraSettings{
+		ObservedAt: time.Now().UTC(),
+		Properties: values,
+	}, nil
 }
 
 func (p *Provider) Streams(ctx context.Context, id model.CameraID) ([]backend.StreamEndpoint, error) {

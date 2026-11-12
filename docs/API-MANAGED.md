@@ -91,6 +91,30 @@ Current HTTP errors are small and do not echo upstream details:
 
 For `/v2/info`, `401` is the same authorization failure. The endpoint is not registered in legacy mode (`404`). A malformed state file prevents managed startup; the runtime does not replace it or generate a fallback identity.
 
+### Read-only C201 settings status
+
+When the injected camera provider implements `CameraSettingsProvider`, the authenticated route `GET /v2/cameras/{id}/settings` reads only a fixed C201 property allowlist through the existing account. It accepts no property IDs and exposes no write route. Home Assistant checks the `camera_settings_read` feature in `/v2/info` in a background task and retries that check every 60 seconds after a transport error or while the feature is absent. Camera and button setup does not wait for this optional check, and the settings route is not called until the feature is advertised. Once enabled, the integration polls settings every five minutes. `night_shot` has the model-spec mapping `0=Off`, `1=On`, `2=Auto`; five diagnostic binary sensors report whether the indicator-light, motion-detection, human-detection, movement-detection, and pet-detection options are enabled. The binary sensors report configuration values, not live detection events. Unknown Night Shot integer values are shown as `Unknown (n)`; nonzero MIoT result codes make the corresponding entity unavailable.
+
+The fixed properties are `night_shot` (`SIID 2 / PIID 3`, `uint8`), `indicator_light` (`SIID 4 / PIID 1`, `bool`), `motion_detection` (`SIID 5 / PIID 1`, `bool`), `pet_detection` (`SIID 8 / PIID 3`, `bool`), `human_detection` (`SIID 8 / PIID 6`, `bool`), and `move_detection` (`SIID 8 / PIID 7`, `bool`). These addresses and types come from the local C201 MIoT diagnostic specification. Current property values and read availability on the camera's reported firmware have not yet been verified in a current authorized run.
+
+```http
+GET /v2/cameras/<opaque-camera-id>/settings HTTP/1.1
+Authorization: Bearer <gateway-token>
+```
+
+```json
+{
+  "observed_at": "2026-11-12T12:00:00Z",
+  "properties": {
+    "night_shot": {"code": 0, "value": 0},
+    "indicator_light": {"code": 0, "value": true},
+    "motion_detection": {"code": 0, "value": true}
+  }
+}
+```
+
+The provider must have loaded the camera inventory before the request; the settings read itself does not trigger discovery, open a media session, or change camera settings. A missing camera returns `404 camera_not_found`, another model returns `409 unsupported_model`, malformed MIoT output returns `502 invalid_backend_response`, and missing provider/account or upstream failure returns sanitized `503 backend_unavailable`. The response contains no Xiaomi device ID. This reports MIoT property values only; it does not prove physical IR filter movement, image quality in darkness, event delivery, or current read availability for every property.
+
 ### Proposed managed media authorization for T06
 
 The camera entity's `stream_source()` must return a URL the HA stream pipeline can open. Home Assistant's [camera integration guidance](https://developers.home-assistant.io/docs/core/entity/camera/) uses a stream source URL, and its [Generic Camera docs](https://www.home-assistant.io/integrations/generic/) explicitly support RTSP usernames/passwords in the URL or configured separately. That makes a scoped media account a viable proposal, subject to a test against the pinned HA and gateway versions.

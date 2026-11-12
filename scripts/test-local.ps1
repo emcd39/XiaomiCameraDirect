@@ -148,6 +148,7 @@ try {
     }
     Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/test_gateway_client.py') -Destination (Join-Path $HaConfig 'tests/test_gateway_client.py')
     Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/test_camera_entity.py') -Destination (Join-Path $HaConfig 'tests/test_camera_entity.py')
+    Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/test_camera_settings.py') -Destination (Join-Path $HaConfig 'tests/test_camera_settings.py')
     Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/e2e/test_ha.py') -Destination (Join-Path $HaConfig 'tests/e2e/test_ha.py')
     Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/e2e/test_c201_ha.py') -Destination (Join-Path $HaConfig 'tests/e2e/test_c201_ha.py')
     Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/e2e/verify_source.py') -Destination (Join-Path $HaConfig 'tests/e2e/verify_source.py')
@@ -159,7 +160,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/fixtures/gateway-mock.json') -Destination (Join-Path $GatewayDir 'config.json')
     $gatewayDigest = Get-SourceDigest $RepoRoot @('Dockerfile', 'go.mod', 'go.sum', 'cmd', 'internal')
     $componentDigest = Get-SourceDigest $RepoRoot @('custom_components/xiaomi_local_gateway')
-    $testDigest = Get-SourceDigest $RepoRoot @('tests/e2e', 'tests/fixtures', 'tests/mocks')
+    $testDigest = Get-SourceDigest $RepoRoot @('tests')
     Write-Evidence "GATEWAY_SOURCE_SHA256=$gatewayDigest"
     Write-Evidence "HA_INTEGRATION_SOURCE_SHA256=$componentDigest"
     Write-Evidence "E2E_AND_MOCK_SOURCE_SHA256=$testDigest"
@@ -224,6 +225,7 @@ try {
     $null = Invoke-HaPython 'Home Assistant check_config' @('-m', 'homeassistant', '--script', 'check_config', '--config', '/config')
     $null = Invoke-HaPython 'Python gateway client tests' @('-m', 'unittest', 'discover', '-s', '/config/tests', '-p', 'test_gateway_client.py', '-v')
     $null = Invoke-HaPython 'HA camera stream capability follows coordinator updates' @('/config/tests/test_camera_entity.py')
+    $null = Invoke-HaPython 'C201 settings retry, feature gate, and diagnostic entities' @('/config/tests/test_camera_settings.py')
     $null = Invoke-HaPython 'Fresh HA onboarding and integration config flow' @('/config/tests/e2e/test_ha.py', 'setup')
     $null = Invoke-HaPython 'Verify HA camera and PTZ entities' @('/config/tests/e2e/test_ha.py', 'verify-entities')
     $null = Invoke-HaPython 'Verify C201 snapshot through HA camera proxy and live HA HLS stream' @('/config/tests/e2e/test_c201_ha.py', 'verify', '--seconds', '12')
@@ -248,10 +250,11 @@ try {
     $null = Invoke-HaPython 'Verify cameras become unavailable' @('/config/tests/e2e/test_ha.py', 'wait-unavailable')
     $null = Invoke-Wslc 'Restart only this run gateway' @('start', $GatewayContainer)
     $null = Invoke-HaPython 'Verify cameras recover after gateway restart' @('/config/tests/e2e/test_ha.py', 'wait-available')
+    $null = Invoke-HaPython 'Verify late C201 settings capability in a loaded config entry' @('/config/tests/e2e/test_ha.py', 'late-settings')
 
     $finalComponentDigest = Get-SourceDigest $RepoRoot @('custom_components/xiaomi_local_gateway')
     $finalGatewayDigest = Get-SourceDigest $RepoRoot @('Dockerfile', 'go.mod', 'go.sum', 'cmd', 'internal')
-    $finalTestDigest = Get-SourceDigest $RepoRoot @('tests/e2e', 'tests/fixtures', 'tests/mocks')
+    $finalTestDigest = Get-SourceDigest $RepoRoot @('tests')
     if ($finalComponentDigest -ne $componentDigest -or $finalGatewayDigest -ne $gatewayDigest -or $finalTestDigest -ne $testDigest) {
         throw 'Current source changed while this test run was in progress'
     }

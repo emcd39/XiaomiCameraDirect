@@ -45,6 +45,7 @@ type Handler struct {
 	apiToken         string
 	ptz              PTZ
 	cameraProvider   backend.CameraProvider
+	settingsProvider backend.CameraSettingsProvider
 	managedStep      managedStepProvider
 	managedPTZ       backend.PTZProvider
 	snapshotProvider backend.SnapshotProvider
@@ -85,10 +86,14 @@ func NewWithRuntimeInfo(cfg config.Config, token string, ptz PTZ, cameras backen
 func NewWithManagedState(cfg config.Config, token string, ptz PTZ, cameras backend.CameraProvider, managedPTZ backend.PTZProvider, state *store.Store) http.Handler {
 	var runtimeInfo RuntimeInfo
 	if state != nil {
+		features := []string{"camera_selection"}
+		if _, supported := cameras.(backend.CameraSettingsProvider); supported {
+			features = append(features, "camera_settings_read")
+		}
 		runtimeInfo = RuntimeInfo{
 			InstanceID: state.Snapshot().InstanceID,
 			APIVersion: ManagedAPIVersion,
-			Features:   []string{"camera_selection"},
+			Features:   features,
 		}
 	}
 	return newWithRuntimeInfo(cfg, token, ptz, cameras, managedPTZ, runtimeInfo, state)
@@ -101,11 +106,13 @@ func newWithRuntimeInfo(cfg config.Config, token string, ptz PTZ, cameras backen
 		runtimeInfo.Features = append([]string{}, runtimeInfo.Features...)
 	}
 	stepProvider, _ := cameras.(managedStepProvider)
+	settingsProvider, _ := cameras.(backend.CameraSettingsProvider)
 	h := &Handler{
 		cfg:              cfg,
 		apiToken:         token,
 		ptz:              ptz,
 		cameraProvider:   cameras,
+		settingsProvider: settingsProvider,
 		managedStep:      stepProvider,
 		managedPTZ:       managedPTZ,
 		snapshotProvider: snapshotProvider(cameras),
@@ -125,6 +132,7 @@ func newWithRuntimeInfo(cfg config.Config, token string, ptz PTZ, cameras backen
 	})
 	mux.HandleFunc("GET /v1/cameras", h.list)
 	mux.HandleFunc("GET /v2/cameras", h.managedList)
+	mux.HandleFunc("GET /v2/cameras/{id}/settings", h.managedSettings)
 	mux.HandleFunc("GET /v2/cameras/{id}/snapshot", h.managedSnapshot)
 	mux.HandleFunc("POST /v2/cameras/{id}/ptz/step", h.managedStepOnce)
 	if state != nil {
@@ -173,6 +181,30 @@ func (h *Handler) managedSnapshot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(image)
+}
+
+func (h *Handler) managedSettings(w http.ResponseWriter, r *http.Request) {
+	if h.settingsProvider == nil {
+		respond(w, http.StatusServiceUnavailable, map[string]string{"error": string(model.ErrorBackendUnavailable)})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	settings, err := h.settingsProvider.CameraSettings(ctx, model.CameraID(r.PathValue("id")))
+	if err != nil {
+		switch {
+		case errors.Is(err, xiaomi.ErrCameraNotFound):
+			respond(w, http.StatusNotFound, map[string]string{"error": "camera_not_found"})
+		case errors.Is(err, xiaomi.ErrUnsupportedCamera):
+			respond(w, http.StatusConflict, map[string]string{"error": string(model.ErrorUnsupportedModel)})
+		case errors.Is(err, xiaomi.ErrInvalidCameraSettings):
+			respond(w, http.StatusBadGateway, map[string]string{"error": "invalid_backend_response"})
+		default:
+			respond(w, http.StatusServiceUnavailable, map[string]string{"error": string(model.ErrorBackendUnavailable)})
+		}
+		return
+	}
+	respond(w, http.StatusOK, settings)
 }
 
 type managedStepRequest struct {

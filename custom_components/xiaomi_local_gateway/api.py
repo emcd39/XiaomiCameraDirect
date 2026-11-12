@@ -94,6 +94,52 @@ class GatewayClient:
             raise GatewayError("Invalid camera inventory response")
         return normalized
 
+    async def camera_settings(self, camera_id: str) -> dict:
+        result = await self._call(
+            "GET", f"/v2/cameras/{quote(camera_id, safe='')}/settings"
+        )
+        properties = result.get("properties") if isinstance(result, dict) else None
+        observed_at = result.get("observed_at") if isinstance(result, dict) else None
+        if not isinstance(observed_at, str) or not isinstance(properties, dict):
+            raise GatewayError("Invalid camera settings response")
+        property_types = {
+            "night_shot": int,
+            "indicator_light": bool,
+            "motion_detection": bool,
+            "human_detection": bool,
+            "move_detection": bool,
+            "pet_detection": bool,
+        }
+        normalized = {}
+        for name, setting in properties.items():
+            expected_type = property_types.get(name)
+            value = setting.get("value") if isinstance(setting, dict) else None
+            if (
+                expected_type is None
+                or not isinstance(setting, dict)
+                or type(setting.get("code")) is not int
+                or (value is not None and type(value) is not expected_type)
+            ):
+                raise GatewayError("Invalid camera settings response")
+            normalized[name] = {"code": setting["code"], "value": value}
+        if "night_shot" not in normalized:
+            raise GatewayError("Invalid camera settings response")
+        return {
+            "observed_at": observed_at,
+            "properties": normalized,
+        }
+
+    async def supports_camera_settings(self) -> bool:
+        """Check the managed API feature flag before scheduling settings polls."""
+        try:
+            result = await self._call("GET", "/v2/info")
+        except GatewayEndpointUnavailable:
+            return False
+        if not isinstance(result, dict):
+            return False
+        features = result.get("features")
+        return isinstance(features, list) and "camera_settings_read" in features
+
     async def _legacy_cameras(self) -> list[dict]:
         result = await self._call("GET", "/v1/cameras")
         cameras = result.get("cameras") if isinstance(result, dict) else None

@@ -51,6 +51,20 @@ type fakeStreamProvider struct {
 	streams map[model.CameraID][]backend.StreamEndpoint
 }
 
+type fakeCameraSettingsProvider struct {
+	*fakeCameraProvider
+	settings      backend.CameraSettings
+	settingsErr   error
+	settingsCalls int
+	requestedID   model.CameraID
+}
+
+func (p *fakeCameraSettingsProvider) CameraSettings(_ context.Context, id model.CameraID) (backend.CameraSettings, error) {
+	p.settingsCalls++
+	p.requestedID = id
+	return p.settings, p.settingsErr
+}
+
 func (p *fakeStreamProvider) Streams(_ context.Context, id model.CameraID) ([]backend.StreamEndpoint, error) {
 	return p.streams[id], nil
 }
@@ -81,6 +95,59 @@ func TestManagedSnapshotRequiresAuthAndReturnsJPEG(t *testing.T) {
 	h.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "image/jpeg" || !reflect.DeepEqual(response.Body.Bytes(), jpeg) {
 		t.Fatalf("authorized snapshot = %d %q %v", response.Code, response.Header().Get("Content-Type"), response.Body.Bytes())
+	}
+}
+
+func TestManagedCameraSettingsRequiresAuthAndAdvertisesCapability(t *testing.T) {
+	observedAt := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
+	provider := &fakeCameraSettingsProvider{
+		fakeCameraProvider: &fakeCameraProvider{},
+		settings: backend.CameraSettings{
+			ObservedAt: observedAt,
+			Properties: map[string]backend.SettingValue{
+				"night_shot":       {Code: 0, Value: json.RawMessage(`2`)},
+				"motion_detection": {Code: 0, Value: json.RawMessage(`true`)},
+			},
+		},
+	}
+	state, err := store.Open(filepath.Join(t.TempDir(), "managed-state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewWithManagedState(config.Config{}, "secret", nil, provider, nil, state)
+
+	path := "/v2/cameras/xiaomi_0123456789abcdef/settings"
+	unauthorized := httptest.NewRecorder()
+	h.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, path, nil))
+	if unauthorized.Code != http.StatusUnauthorized || provider.settingsCalls != 0 {
+		t.Fatalf("unauthorized settings = %d, provider calls=%d; want 401 and no read", unauthorized.Code, provider.settingsCalls)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, path, nil)
+	request.Header.Set("Authorization", "Bearer secret")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || provider.settingsCalls != 1 || provider.requestedID != model.CameraID("xiaomi_0123456789abcdef") {
+		t.Fatalf("authorized settings = %d %s, calls=%d id=%q", response.Code, response.Body.String(), provider.settingsCalls, provider.requestedID)
+	}
+	var got backend.CameraSettings
+	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode settings response: %v", err)
+	}
+	if !got.ObservedAt.Equal(observedAt) || string(got.Properties["night_shot"].Value) != "2" || string(got.Properties["motion_detection"].Value) != "true" {
+		t.Fatalf("settings response = %#v", got)
+	}
+
+	infoRequest := httptest.NewRequest(http.MethodGet, "/v2/info", nil)
+	infoRequest.Header.Set("Authorization", "Bearer secret")
+	infoResponse := httptest.NewRecorder()
+	h.ServeHTTP(infoResponse, infoRequest)
+	var info RuntimeInfo
+	if infoResponse.Code != http.StatusOK || json.Unmarshal(infoResponse.Body.Bytes(), &info) != nil {
+		t.Fatalf("managed info = %d %s", infoResponse.Code, infoResponse.Body.String())
+	}
+	if !reflect.DeepEqual(info.Features, []string{"camera_selection", "camera_settings_read"}) {
+		t.Fatalf("managed features = %v", info.Features)
 	}
 }
 
