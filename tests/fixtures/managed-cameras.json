@@ -1,0 +1,44 @@
+{
+  "cameras": [
+    {
+      "id": "camera-offline",
+      "name": "Offline camera",
+      "model": "Example camera",
+      "model_id": "example.camera",
+      "selected": true,
+      "capabilities": {
+        "video": true,
+        "snapshot": true,
+        "audio": false,
+        "ptz": false,
+        "presets": false
+      },
+      "video": {
+        "state": "offline",
+        "reason": "lan_unreachable"
+      },
+      "control": {
+        "state": "unsupported"
+      }
+    },
+    {
+      "id": "camera-auth-required",
+      "name": "Auth required camera",
+      "capabilities": {
+        "video": true,
+        "snapshot": false,
+        "audio": false,
+        "ptz": false,
+        "presets": false
+      },
+      "selected": true,
+      "video": {
+        "state": "auth_required",
+        "reason": "auth_required"
+      },
+      "control": {
+        "state": "unsupported"
+      }
+    }
+  ]
+}

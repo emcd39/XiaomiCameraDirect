@@ -1,0 +1,22 @@
+{
+  "listen": "0.0.0.0:8099",
+  "cameras": [
+    {
+      "id": "test_garden",
+      "name": "Test Garden",
+      "model": "xiaomi.camera.c201",
+      "rtsp_url": "rtsp://xlg-rtsp-mock:8554/garden",
+      "onvif_url": "http://xlg-onvif-mock:8891/onvif/ptz_service",
+      "profile": "Profile_1",
+      "ptz": true,
+      "step": 0.08
+    },
+    {
+      "id": "test_porch",
+      "name": "Test Porch",
+      "model": "Mock RTSP",
+      "rtsp_url": "rtsp://xlg-rtsp-mock:8554/porch",
+      "ptz": false
+    }
+  ]
+}

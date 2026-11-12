@@ -1,0 +1,7 @@
+config.live.json
+recordings/
+*.log
+*.tmp
+*.exe
+*_linux
+private/

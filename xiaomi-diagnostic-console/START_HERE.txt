@@ -1,0 +1,32 @@
+XIAOMI LOCAL GATEWAY – DIAGNOSTIC CONSOLE v0.2
+=================================================
+
+WINDOWS – MOCK DEMO (bez kamery)
+
+1. Z této složky spusť:
+      .\bin\diagconsole.exe -config .\config.mock.json
+2. Otevři http://127.0.0.1:18880.
+3. Spusť a zastav syntetický náhled. Šipky vracejí simulaci a nevolají gateway.
+4. Konzoli ukonči Ctrl+C.
+
+WINDOWS – ŽIVÁ TESTOVACÍ C201
+
+Spusť `Start-Test-Camera.cmd` bez argumentů. Funguje i z jiného pracovního adresáře:
+
+    C:\DEV\xiaomi-local-gateway\xiaomi-diagnostic-console\Start-Test-Camera.cmd
+
+Spouštěč ověří běžící managed gateway podle PID, cesty executable a lokálního health endpointu. Pokud neběží, spustí projektový `.test-env\c201-pilot\win-gateway\start-host-gateway.ps1` s explicitní cestou k FFmpegu. Vytvoří ignorovaný `config.live.json` a spustí konzoli.
+
+Předpoklady: stejný Windows uživatel, jehož Xiaomi Viewer profil obsahuje testovací C201 a DPAPI token; gateway potřebuje DNS/přístup k Xiaomi účtu a síť testovací kamery. Nová gateway při startu obnoví účet a vyžádá inventář, což může otevřít kamerovou session. API zůstává na `127.0.0.1`; firewall se nemění.
+
+Otevři přesnou URL vypsanou konzolí. Při načtení stránky se inventář vyžádá jednou a připraví se session jediné nalezené C201. Při více C201 vyber konkrétní kameru. Náhled zapni jen pro sledování obrazu; PTZ jej nepotřebuje.
+
+Kliknutí na šipku odešle jeden krok přes gateway s ID C201 zobrazené v dané kartě. Pokud se výběr během přípravy změní, konzole akci odmítne bez PTZ zápisu. UI nevyžaduje checkbox ani textové potvrzení. Po úspěchu ukáže `write_status=sent`; odpověď `0x113` a fyzický pohyb jsou samostatné údaje. Konzole po timeoutu povel neopakuje. Všechny čtyři fyzické směry jsou ověřené na testovací C201.
+
+Náhled zastav tlačítkem „Zastavit“ a konzoli ukonči Ctrl+C. Gateway běží samostatně; další spuštění `.cmd` ji znovu použije.
+
+DOKUMENTACE
+
+  README.md
+  docs/PTZ_IMPLEMENTATION_HANDOFF.md
+  docs/TEST_REPORT.md

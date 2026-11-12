@@ -1,11 +1,14 @@
 """UI onboarding for a local Gateway URL and API token."""
 from __future__ import annotations
+import logging
 import voluptuous as vol
 from homeassistant.config_entries import ConfigFlow
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import TextSelector, TextSelectorConfig, TextSelectorType
 from .api import GatewayClient, GatewayError
 from .const import CONF_TOKEN, CONF_URL, DOMAIN
+
+LOGGER = logging.getLogger(__name__)
 
 class XiaomiLocalGatewayConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
@@ -20,7 +23,8 @@ class XiaomiLocalGatewayConfigFlow(ConfigFlow, domain=DOMAIN):
                 try:
                     client = GatewayClient(async_get_clientsession(self.hass), url, user_input[CONF_TOKEN])
                     await client.cameras()
-                except GatewayError:
+                except GatewayError as err:
+                    LOGGER.warning("Could not connect to gateway: %s", err)
                     errors["base"] = "cannot_connect"
                 else:
                     await self.async_set_unique_id(url.lower())

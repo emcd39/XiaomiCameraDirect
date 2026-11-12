@@ -50,3 +50,15 @@ func TestSOAPFaultFails(t *testing.T) {
 		t.Fatal("expected fault")
 	}
 }
+
+func TestInvalidSOAPResponseFails(t *testing.T) {
+	for _, body := range []string{"", "<ok/>", `<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body/></s:Envelope>`} {
+		t.Run(body, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(body)) }))
+			defer server.Close()
+			if err := New().Stop(context.Background(), server.URL, "garden"); err == nil {
+				t.Fatal("expected invalid response error")
+			}
+		})
+	}
+}

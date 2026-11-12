@@ -55,8 +55,8 @@ func (c *Config) Validate() error {
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:8099"
 	}
-	if _, _, err := net.SplitHostPort(c.Listen); err != nil {
-		return fmt.Errorf("listen: %w", err)
+	if err := ValidateListen(c.Listen); err != nil {
+		return err
 	}
 	ids := map[string]bool{}
 	if len(c.Cameras) == 0 {
@@ -98,6 +98,14 @@ func (c *Config) Validate() error {
 		if cam.Profile == "" {
 			cam.Profile = cam.ID
 		}
+	}
+	return nil
+}
+
+// ValidateListen checks the listener address for legacy and managed modes.
+func ValidateListen(listen string) error {
+	if _, _, err := net.SplitHostPort(listen); err != nil {
+		return fmt.Errorf("listen: %w", err)
 	}
 	return nil
 }

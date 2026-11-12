@@ -1,0 +1,17 @@
+.git
+.test-env
+.codex
+**/__pycache__
+**/*.pyc
+# The Go test stage needs this one provider-independent response fixture.
+tests
+!tests/
+tests/*
+!tests/mocks/
+!tests/mocks/**
+!tests/fixtures/
+tests/fixtures/*
+!tests/fixtures/managed-cameras.json
+docs
+examples
+custom_components

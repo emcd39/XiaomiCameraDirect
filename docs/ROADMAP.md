@@ -1,11 +1,24 @@
 # Development roadmap
 
+## Active delivery plan — simple setup and reliable operation
+
+The [C201 delivery plan](DELIVERY-PLAN.md) defines the user-facing scope,
+physical acceptance tests, and release criteria for video, camera movement,
+and the other camera features.
+
+The implementation order is now defined in [SIMPLE-STABLE-PLAN.md](SIMPLE-STABLE-PLAN.md)
+(Czech), with a bounded handoff prompt in [NEXT-TASK.md](NEXT-TASK.md).
+Prioritize a verified C201 backend, one managed runtime, HA onboarding,
+persistent settings and recovery. Native MISS development is deferred until
+hardware evidence shows it is necessary. The milestones below remain the
+original scope inventory; they are not the current implementation order.
+
 ## Milestone M0 — architecture + testable skeleton (in this ZIP)
 - [x] Go API with auth, PTZ adapter, structured camera inventory
 - [x] HACS config flow and HA camera/button entities
 - [x] Frigate RTSP/ONVIF config generator
 - [x] Dockerfile, Compose example, Go test suite, CI
-- [ ] Validate HA integration in running Home Assistant (not available here)
+- [x] Reproduce the local HA Container mock integration; real video remains unverified
 - [ ] Validate ONVIF commands against a physical Xiaomi camera
 
 ## M1 — end-to-end pilot

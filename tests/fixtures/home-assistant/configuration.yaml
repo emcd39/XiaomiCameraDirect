@@ -1,0 +1,9 @@
+default_config:
+
+logger:
+  default: warning
+
+homeassistant:
+  name: Xiaomi Gateway E2E
+  unit_system: metric
+  time_zone: Europe/Prague

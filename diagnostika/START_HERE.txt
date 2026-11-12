@@ -1,0 +1,13 @@
+XIAOMI C201 — diagnostický balíček (7. 11. 2026)
+
+1. Začněte aktuálním souhrnem v `PLAN_C201.md` a výsledky v `ZAZNAM_VYSLEDKU_C201.md`.
+2. Síťová sonda už proběhla 7. 11. 2026; surový výstup je v ignorovaném `.test-env/c201-standalone/private/network-probe/`.
+3. Xiaomi Camera Viewer diagnostics už mají redigovaný místní archiv v ignorovaném `.test-env/c201-standalone/private/evidence-s01/`; vizuální dekódování obrazu se tím nepotvrdilo.
+4. L2 je technicky dosaženo: 5 minut H.265 848×480 a tři nová RTSP připojení dekódovala snímky. Výsledek je v `ZAZNAM_VYSLEDKU_C201.md`; obraz nebyl ukládán ani ručně zobrazen.
+5. V předchozím headless běhu se účet obnovil, inventář našel jednu C201, CS2/TCP session i RTSP relay se připravily a FFmpeg dekódoval jeden 160×90 snímek před a jeden po krátkém kroku PTZ (rc 0 oba). Porovnání fyzický pohyb nepotvrdilo. Poslední souvislý pokus po krátké prodlevě skončil na `account_restore` timeoutem `account.xiaomi.com` před inventářem: nově dekódované snímky 0, párování pevných bodů N/A, PTZ příkaz 0. Snímky z minulého běhu byly pouze v paměti. Dřívější L2 stále dokládá pětiminutové H.265 a opakovaná RTSP dekódování. Kamera komunikuje s gateway přes CS2/MISS a `cs2+tcp`; RTSP je výstup gateway. HA HLS zůstává neověřené kvůli WSL `E_ACCESSDENIED` a chybějící potvrzené C201 entitě v dostupném HA. Síťová pravidla a konfigurace zůstaly beze změny. Podrobnosti jsou v `ZAZNAM_VYSLEDKU_C201.md` částech H–U.
+6. Navazující audit PTZ kódu potvrdil request `0x112` / `{"operation":1}` pro jeden levý krok a možnost přečíst případnou `0x113` přes `Session.Replies()`; současný `Step` však sám čeká jen na výsledek zápisu. Nejnovější desetisnímkový pokus s ověřenou binárkou skončil při `account_restore` (`http_request`), takže dekódování i PTZ zůstaly 0. Fyzická kontrola v Xiaomi Home z fáze 0 není potvrzená. Podrobnosti jsou v `ZAZNAM_VYSLEDKU_C201.md` části V a `C201_PTZ_navazujici_plan.md`.
+7. Offline PTZ diagnostika je připravená na stejné `stream.Session`: umí rozlišit `write_ok`, přijatou `0x113` a `no_reply` po 2 s a vypisuje jen sanitizovaná pole. Cílené testy s falešným transportem prošly; žádný živý příkaz ani desktop se nepoužil. Výsledek je v části W `ZAZNAM_VYSLEDKU_C201.md` a `.test-env/evidence/c201-ptz-offline-verify-20261107.log`.
+8. Pozdní `0x113` po limitu se i při opožděném probuzení označí jako `no_reply`. `Provider.Step()` a headless `ptz-once.go` volají `DiagnosticMotorStep` na video session; helper route byla offline testována se simulovanou session, Provider compile-only. Živý krok se neposlal. Výsledek je v části X záznamu.
+
+Nespouštějte žádný flash ani neznámé PTZ příkazy.
+Před sdílením ošetřete osobní údaje, síťové identifikátory a tokeny.

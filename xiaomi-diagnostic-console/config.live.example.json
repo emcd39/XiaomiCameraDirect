@@ -1,0 +1,13 @@
+{
+  "listen": "127.0.0.1:18880",
+  "mock": false,
+  "gateway_url": "http://127.0.0.1:49320",
+  "token_file": "C:\\DEV\\xiaomi-local-gateway\\.test-env\\c201-pilot\\win-gateway\\host-run-REPLACE\\private\\api-token.txt",
+  "allowed_rtsp_hosts": ["127.0.0.1", "192.168.3.178"],
+  "ffmpeg_path": "C:\\DEV\\xiaomi-local-gateway\\.test-env\\c201-pilot\\win-gateway\\ffmpeg.exe",
+  "record_dir": "C:\\DEV\\xiaomi-local-gateway\\.test-env\\c201-pilot\\win-gateway\\recordings",
+  "camera_address": "192.168.2.124",
+  "ptz": {
+    "enabled": false
+  }
+}

@@ -39,6 +39,7 @@ func (c *Client) post(ctx context.Context, endpoint, operation, body string) err
 	}
 	// SOAP can return a Fault with HTTP 200; don't silently report success.
 	dec := xml.NewDecoder(strings.NewReader(string(data)))
+	var envelope, soapBody, response bool
 	for {
 		token, err := dec.Token()
 		if err == io.EOF {
@@ -47,9 +48,20 @@ func (c *Client) post(ctx context.Context, endpoint, operation, body string) err
 		if err != nil {
 			return fmt.Errorf("ONVIF %s: malformed XML: %w", operation, err)
 		}
-		if start, ok := token.(xml.StartElement); ok && start.Name.Local == "Fault" {
-			return fmt.Errorf("ONVIF %s: SOAP fault", operation)
+		if start, ok := token.(xml.StartElement); ok {
+			if start.Name.Local == "Fault" {
+				return fmt.Errorf("ONVIF %s: SOAP fault", operation)
+			}
+			if start.Name.Space == "http://www.w3.org/2003/05/soap-envelope" {
+				envelope = envelope || start.Name.Local == "Envelope"
+				soapBody = soapBody || start.Name.Local == "Body"
+			} else if soapBody {
+				response = true
+			}
 		}
+	}
+	if !envelope || !soapBody || !response {
+		return fmt.Errorf("ONVIF %s: invalid SOAP response", operation)
 	}
 	return nil
 }
