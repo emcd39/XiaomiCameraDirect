@@ -215,6 +215,13 @@ func (p *Provider) CameraDiagnostics(ctx context.Context, id model.CameraID, req
 		}
 		return backend.CameraSessionDiagnostics{Operation: request.Operation, CorrelationID: request.CorrelationID, State: backend.SessionIdle}, nil
 	}
+	return p.cameraDiagnosticsForSource(ctx, id, source, request)
+}
+
+// cameraDiagnosticsForSource reads a source that was captured from the
+// provider inventory. It revalidates that identity while holding the source
+// lifecycle lock, and all provider-lock acquisition remains cancellable.
+func (p *Provider) cameraDiagnosticsForSource(ctx context.Context, id model.CameraID, source *cameraSource, request backend.CameraDiagnosticRequest) (backend.CameraSessionDiagnostics, error) {
 	if err := lockDiagnosticContext(ctx, &source.lifecycleMu); err != nil {
 		source.recordDiagnosticEvent(request, "diagnostics_read", diagnosticResult(err), nil)
 		return backend.CameraSessionDiagnostics{}, err
@@ -230,7 +237,13 @@ func (p *Provider) CameraDiagnostics(ctx context.Context, id model.CameraID, req
 			source.recordDiagnosticEvent(request, "diagnostics_read", diagnosticResult(err), nil)
 			return backend.CameraSessionDiagnostics{}, err
 		}
-		p.mu.RLock()
+		if !p.mu.TryRLock() {
+			if err := waitDiagnosticLock(ctx); err != nil {
+				source.recordDiagnosticEvent(request, "diagnostics_read", diagnosticResult(err), nil)
+				return backend.CameraSessionDiagnostics{}, err
+			}
+			continue
+		}
 		if p.closed || p.sources[id] != source {
 			p.mu.RUnlock()
 			source.recordDiagnosticEvent(request, "diagnostics_read", "stale", nil)

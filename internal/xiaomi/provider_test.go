@@ -407,6 +407,83 @@ func TestCameraDiagnosticsHonorsCancellationWhileWaitingForSourceLock(t *testing
 	}
 }
 
+func TestCameraDiagnosticsInventoryLockWaitHonorsContextAndReleasesLifecycle(t *testing.T) {
+	for _, mode := range []string{"cancel", "deadline"} {
+		t.Run(mode, func(t *testing.T) {
+			provider, id, source, run, session, _ := newProviderStepFixture(true, true)
+			provider.mu.Lock()
+			inventoryLocked := true
+			defer func() {
+				if inventoryLocked {
+					provider.mu.Unlock()
+				}
+			}()
+
+			var ctx context.Context
+			var cancel context.CancelFunc
+			if mode == "deadline" {
+				ctx, cancel = context.WithTimeout(context.Background(), 250*time.Millisecond)
+			} else {
+				ctx, cancel = context.WithCancel(context.Background())
+			}
+			defer cancel()
+
+			done := make(chan error, 1)
+			go func() {
+				_, err := provider.cameraDiagnosticsForSource(ctx, id, source, testTransportDiagnosticsRequest(run.generation))
+				done <- err
+			}()
+
+			waitUntil := time.Now().Add(time.Second)
+			for {
+				if !source.lifecycleMu.TryLock() {
+					break
+				}
+				source.lifecycleMu.Unlock()
+				if time.Now().After(waitUntil) {
+					t.Fatal("diagnostics did not acquire lifecycleMu before waiting for the inventory lock")
+				}
+				time.Sleep(time.Millisecond)
+			}
+
+			if mode == "cancel" {
+				cancel()
+			}
+			select {
+			case err := <-done:
+				if mode == "cancel" && !errors.Is(err, context.Canceled) {
+					t.Fatalf("diagnostics error = %v, want canceled", err)
+				}
+				if mode == "deadline" && !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("diagnostics error = %v, want deadline exceeded", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("diagnostics waited for the inventory lock after cancellation/deadline")
+			}
+
+			if !source.lifecycleMu.TryLock() {
+				t.Fatal("diagnostics retained lifecycleMu while inventory lock was still held")
+			}
+			source.lifecycleMu.Unlock()
+			provider.mu.Unlock()
+			inventoryLocked = false
+
+			if _, err := provider.CameraDiagnostics(context.Background(), id, testTransportDiagnosticsRequest(run.generation)); err != nil {
+				t.Fatalf("current generation after inventory unlock: %v", err)
+			}
+			if session.diagnosticsCalls != 1 {
+				t.Fatalf("current generation metadata reads = %d, want 1", session.diagnosticsCalls)
+			}
+			if _, err := provider.CameraDiagnostics(context.Background(), id, testTransportDiagnosticsRequest("gen_ffffffffffffffffffffffffffffffff")); !errors.Is(err, backend.ErrStaleCameraSessionGeneration) {
+				t.Fatalf("stale generation error = %v, want stale generation", err)
+			}
+			if session.diagnosticsCalls != 1 {
+				t.Fatalf("stale generation reached metadata reader; calls=%d", session.diagnosticsCalls)
+			}
+		})
+	}
+}
+
 func newProviderStepFixture(pathReady, writeOK bool) (*Provider, model.CameraID, *cameraSource, *cameraSessionRun, *fakeCameraSession, *fakeCameraPath) {
 	return newProviderStepFixtureForID("xiaomi_0123456789abcdef", pathReady, writeOK)
 }

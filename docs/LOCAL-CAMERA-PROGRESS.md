@@ -54,6 +54,14 @@ Sdílený Go model validuje verzi schématu, enumy, názvy, limity a bezpečný 
 - Headless UI ověřil současně maximálně jeden status request i při 5s latenci; UI se aktualizovalo a PTZ šipky se znovu povolily. Testovací gateway ověřila cizí ID, zastaralou generaci, cancel/timeout s následným uvolněním zámku a ring omezený na 32 událostí.
 - Ověření je výhradně offline/mock. Žádná živá kamera ani fyzická C201 nebyla kontaktována; `C201_VIDEO=UNVERIFIED`. Peer class, chování při WAN blokaci a end-to-end lokálnost zůstávají A03/A04.
 
+## A02 — zrušitelné čekání na zámek inventáře, 2026-11-12
+
+- `CameraDiagnostics` při opětovném ověření identity zdroje používá `TryRLock` a čekání přerušitelné kontextem. Během držení `source.lifecycleMu` už neblokuje na `p.mu.RLock()` bez deadline; po získání inventářového read locku stále kontroluje, že `p.sources[id]` ukazuje na stejný zdroj, a pak kontroluje generaci běhu.
+- Přímý test `TestCameraDiagnosticsInventoryLockWaitHonorsContextAndReleasesLifecycle` pokrývá cancel i deadline při záměrně drženém inventářovém write locku. Dokud jej jiná operace drží, diagnostika skončí a `lifecycleMu` lze ihned získat. Po odemčení uspěje aktuální generace a stará generace skončí před voláním metadata readeru.
+- Cílený test bez race detektoru prošel příkazem `C:\Apps\go\bin\go.exe test ./internal/xiaomi -run '^TestCameraDiagnosticsInventoryLockWaitHonorsContextAndReleasesLifecycle$' -count=1`.
+- Projektový izolovaný runner dokončil Go race testy (`go test -race ./...`), `go vet ./...` i kompletní HA 2026.10.4 headless sadu včetně setup, stream/snapshot, outage/recovery a `late-settings`: `RESULT=PASS`. Log: `.test-env/evidence/test-local-20261112-182832-8bb56eca.log`. Nová regrese je zahrnutá v race sadě balíčku `internal/xiaomi`.
+- Testy používaly pouze fake session a mock HA/gateway. Fyzická C201 nebyla kontaktována; `C201_VIDEO=UNVERIFIED`.
+
 ```powershell
 go run ./cmd/camera-probe -gateway http://127.0.0.1:8099 -dry-run
 # Skutečný inventory GET vyžaduje předem nastavené XLG_API_TOKEN a explicitní opt-in:
