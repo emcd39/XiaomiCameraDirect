@@ -35,7 +35,7 @@ Historické záznamy dokládají dekódované C201 video a čtyři směry PTZ. S
 ### Meze síťové ochrany, které další práce musí řešit
 
 1. `net.ParseIP(host)` v provideru ověřuje syntaxi, ne příslušnost k povolené síti ani identitu kamery. Přímý socket na IP proto není sám o sobě vynucený režim „jen LAN“.
-2. Handshake `WriteUntil` odmítá odpovědi z jiné IP. V běžném `udpConn.Read` je ale podmínka `addr.IP.Equal(c.addr.IP) || n >= 8`; cizí datagram dostatečné délky touto podmínkou projde. V plánu je cílená negativní regrese a oprava po ověření požadované sémantiky portů. Tato kontrola neprováděla exploit ani síťovou sondu.
+2. Handshake `WriteUntil` přijímá pouze odpověď ze stejné IP a zaznamená její port, takže následující punch jde na kamerou vyjednaný port. Dřívější `udpConn.Read` měl výjimku `n >= 8`, která přijala data z libovolné IP; tato výjimka byla v A03 odstraněna. `Read` i handshake nyní používají `net.IP.Equal`, zatímco port se může změnit pouze během handshake po platném CS2 typu. Regrese pokrývají cizí větší UDP datagram, IPv4/IPv4-mapped a IPv6 reprezentace i skutečnou změnu portu na fake peeru. Race sada prošla; viz `LOCAL-CAMERA-PROGRESS.md` A03. Nebyl proveden exploit ani živá síťová sonda.
 3. HA, gateway, kamera a případná proxy mohou používat odlišné síťové namespace/rozhraní. Privátní rozsah IP ani jméno transportu neodhalí VPN, tunel nebo nepřímý přenos.
 4. Nepřítomnost relay implementace v této vlastní CS2 cestě se nesmí přenášet na jiné SDK/adaptéry, které budou přidány později.
 

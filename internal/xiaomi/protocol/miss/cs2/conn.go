@@ -18,6 +18,7 @@ import (
 	"log"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -544,14 +545,27 @@ func marshalData(channel byte, seq uint16, prefix, payload []byte) []byte {
 func newUDPConn(host string, port int) (net.Conn, error) {
 	// A raw UDPConn, because the peer address changes during the handshake when
 	// the camera answers from a different port than we punched to.
-	conn, err := net.ListenUDP("udp", nil)
+	addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
-		return nil, err
+		ip := net.ParseIP(host)
+		if ip == nil {
+			return nil, err
+		}
+		addr = &net.UDPAddr{IP: ip, Port: port}
 	}
 
-	addr, err := net.ResolveUDPAddr("udp", host)
+	network := "udp"
+	if ip := addr.IP.To4(); ip != nil {
+		addr.IP = ip
+		network = "udp4"
+	} else if ip := addr.IP.To16(); ip != nil {
+		addr.IP = ip
+		network = "udp6"
+	}
+
+	conn, err := net.ListenUDP(network, nil)
 	if err != nil {
-		addr = &net.UDPAddr{IP: net.ParseIP(host), Port: port}
+		return nil, err
 	}
 
 	return &udpConn{UDPConn: conn, addr: addr}, nil
@@ -578,7 +592,7 @@ func (c *udpConn) Read(b []byte) (n int, err error) {
 			return 0, err
 		}
 
-		if addr.IP.Equal(c.addr.IP) || n >= 8 {
+		if samePeerIP(addr.IP, c.addr.IP) {
 			return
 		}
 	}
@@ -641,7 +655,7 @@ func (c *udpConn) WriteUntil(req []byte, also []*net.UDPAddr, ok func(res []byte
 			}
 		}
 
-		if !addr.IP.Equal(c.addr.IP) {
+		if !samePeerIP(addr.IP, c.addr.IP) {
 			stats.wrongHost++
 			continue // another host on the LAN answering a broadcast
 		}
@@ -657,6 +671,13 @@ func (c *udpConn) WriteUntil(req []byte, also []*net.UDPAddr, ok func(res []byte
 		stats.unmatched++
 		stats.unmatchedTypes[buf[1]]++
 	}
+}
+
+// samePeerIP compares IP identity across Go's 4-byte IPv4 and 16-byte
+// IPv4-mapped/IPv6 representations. The CS2 handshake may update the peer's
+// port, but media datagrams must continue to come from that same IP.
+func samePeerIP(got, expected net.IP) bool {
+	return len(got) != 0 && len(expected) != 0 && got.Equal(expected)
 }
 
 func validControlDatagram(data []byte) bool {
