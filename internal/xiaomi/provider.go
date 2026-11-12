@@ -272,6 +272,7 @@ func (p *Provider) Cameras(ctx context.Context) ([]model.Camera, error) {
 		if device.Model == supportedModel {
 			camera.Capabilities.Video = true
 			camera.Capabilities.Snapshot = true
+			camera.Support = c201SupportEvidence()
 			source := p.sources[id]
 			if source == nil || source.device.Did != device.Did {
 				source = &cameraSource{provider: p, device: device, id: id}
@@ -286,6 +287,44 @@ func (p *Provider) Cameras(ctx context.Context) ([]model.Camera, error) {
 	p.loaded = time.Now()
 	p.mu.Unlock()
 	return cameras, nil
+}
+
+func c201SupportEvidence() *model.CameraSupport {
+	return &model.CameraSupport{
+		SchemaVersion: 1,
+		Features: map[string]model.FeatureSupport{
+			"video": {
+				Implementation: "implemented",
+				Validation:     "device",
+				Path:           "camera_lan",
+				RequiresCloud:  []string{"account_auth", "inventory", "new_session_negotiation"},
+				EvidenceRef:    "TEST_REPORT.md#latest-c201-l2-decode-7-nov-2026",
+				TestedFirmware: "5.3.2_0016",
+			},
+			"snapshot": {
+				Implementation: "implemented",
+				Validation:     "offline",
+				Path:           "camera_lan",
+				RequiresCloud:  []string{"new_session_negotiation"},
+				EvidenceRef:    ".test-env/evidence/test-local-20261112-162635-f49fca83.log#ha-camera-proxy",
+			},
+			"ptz": {
+				Implementation: "implemented",
+				Validation:     "device",
+				Path:           "camera_lan",
+				RequiresCloud:  []string{"new_session_negotiation"},
+				EvidenceRef:    "TEST_REPORT.md#four-physical-directions-12-nov-2026",
+				TestedFirmware: "5.3.2_0016",
+			},
+			"camera_settings_read": {
+				Implementation: "implemented",
+				Validation:     "offline",
+				Path:           "cloud",
+				RequiresCloud:  []string{"settings_read"},
+				EvidenceRef:    ".test-env/evidence/test-local-20261112-162635-f49fca83.log#late-settings",
+			},
+		},
+	}
 }
 
 func (p *Provider) cameraDevices() ([]*cloud.Device, error) {

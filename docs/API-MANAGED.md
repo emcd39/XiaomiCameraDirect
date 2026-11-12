@@ -78,6 +78,39 @@ Authorization: Bearer <gateway-token>
 }
 ```
 
+### Optional per-camera support evidence
+
+`GET /v2/cameras` may include an optional `support` object for clients that can display per-function diagnostics. Existing `capabilities`, `video`, and `control` fields remain unchanged and sufficient for older clients. `capabilities` states what the selected backend advertises for that camera/profile; `video` and `control` report current state; `support` explains implementation scope and evidence. Unknown or absent `support` data must not make an otherwise valid camera unusable.
+
+```json
+{
+  "support": {
+    "schema_version": 1,
+    "features": {
+      "video": {
+        "implementation": "implemented",
+        "validation": "device",
+        "path": "camera_lan",
+        "requires_cloud": ["account_auth", "inventory", "new_session_negotiation"],
+        "evidence_ref": "TEST_REPORT.md#latest-c201-l2-decode-7-nov-2026",
+        "tested_firmware": "5.3.2_0016"
+      },
+      "camera_settings_read": {
+        "implementation": "implemented",
+        "validation": "offline",
+        "path": "cloud",
+        "requires_cloud": ["settings_read"],
+        "evidence_ref": ".test-env/evidence/test-local-20261112-162635-f49fca83.log#late-settings"
+      }
+    }
+  }
+}
+```
+
+Schema 1 uses `implementation` values `absent`, `research`, or `implemented`; `validation` values `none`, `offline`, `device`, or `home_assistant`; and `path` values `camera_lan`, `cloud`, `nvr_local`, or `unknown`. `path` names the route declared by the implementation/code review; it is **not** proof from packet capture that all traffic followed that path or that the feature works without internet. `validation` states the evidence level, and `evidence_ref` points to the report or test log. `tested_firmware` is included only when the evidence identifies a firmware version. The `requires_cloud` list names operations such as `account_auth`, `inventory`, `new_session_negotiation`, and `settings_read`; a direct camera stream may still need cloud for session setup. A mock or offline test never becomes `device` evidence by itself.
+
+The Xiaomi provider adds this metadata only to the exact C201 model profile. The API removes PTZ/preset evidence if no PTZ provider is installed, and removes settings-read evidence if no settings provider is installed. The HA client ignores unknown schema versions, unknown feature names, and malformed optional feature records while keeping the camera's existing state/capabilities. HA exposes accepted support data as the camera entity's `support` state attribute; it does not create entities for unimplemented functions.
+
 Current HTTP errors are small and do not echo upstream details:
 
 | HTTP | Body | Meaning |

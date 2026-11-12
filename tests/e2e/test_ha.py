@@ -191,6 +191,18 @@ async def test_late_settings_capability(session, token: str) -> None:
             "model": "xiaomi.camera.c201",
             "capabilities": {"video": True, "ptz": True},
             "streams": [{"id": "main", "protocol": "rtsp", "url": "rtsp://127.0.0.1:8554/late-c201"}],
+            "support": {
+                "schema_version": 1,
+                "features": {
+                    "camera_settings_read": {
+                        "implementation": "implemented",
+                        "validation": "offline",
+                        "path": "cloud",
+                        "requires_cloud": ["settings_read"],
+                        "evidence_ref": "late-settings-e2e",
+                    },
+                },
+            },
         }]})
 
     async def info(request):
@@ -235,7 +247,22 @@ async def test_late_settings_capability(session, token: str) -> None:
                 return current, camera, left
             return None
 
-        await wait_for_condition(controls_loaded)
+        _, camera_entity, _ = await wait_for_condition(controls_loaded)
+        camera_support = camera_entity.get("attributes", {}).get("support")
+        expected_camera_support = {
+            "schema_version": 1,
+            "features": {
+                "camera_settings_read": {
+                    "implementation": "implemented",
+                    "validation": "offline",
+                    "path": "cloud",
+                    "requires_cloud": ["settings_read"],
+                    "evidence_ref": "late-settings-e2e",
+                },
+            },
+        }
+        if camera_support != expected_camera_support:
+            raise RuntimeError(f"Camera support diagnostics = {camera_support}; expected {expected_camera_support}")
 
         async def initial_info_failed():
             return state["info_calls"] >= 1
@@ -331,6 +358,7 @@ async def test_late_settings_capability(session, token: str) -> None:
         print(json.dumps({
             "phase": "late-settings",
             "loaded_camera_and_ptz": True,
+            "support_diagnostics": "versioned_and_cloud_dependency_visible",
             "config_entry_state_before_feature": loaded_entry["state"],
             "info_requests": state["info_calls"],
             "settings_requests": state["settings_calls"],

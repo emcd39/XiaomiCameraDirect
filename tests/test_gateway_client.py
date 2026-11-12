@@ -96,6 +96,48 @@ class GatewayClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(cameras[0]["rtsp_url"])
         self.assertFalse(cameras[0]["ptz"])
 
+    async def test_managed_support_metadata_is_optional_and_filters_unknown_fields(self) -> None:
+        self.managed_status = 200
+        self.managed_body = json.dumps({"cameras": [{
+            "id": "c201-test", "name": "C201 test",
+            "capabilities": {"video": True, "ptz": False}, "streams": [],
+            "support": {
+                "schema_version": 1,
+                "future_field": "ignored",
+                "features": {
+                    "video": {
+                        "implementation": "implemented", "validation": "offline",
+                        "path": "camera_lan", "requires_cloud": [],
+                        "evidence_ref": "offline-run#video",
+                    },
+                    "unknown_future_feature": {"implementation": "implemented"},
+                    "ptz": {"implementation": "invented", "validation": "device", "path": "camera_lan"},
+                },
+            },
+        }]})
+        cameras = await self.client.cameras()
+        self.assertEqual(cameras[0]["support"], {
+            "schema_version": 1,
+            "features": {
+                "video": {
+                    "implementation": "implemented", "validation": "offline",
+                    "path": "camera_lan", "requires_cloud": [], "evidence_ref": "offline-run#video",
+                },
+            },
+        })
+
+    async def test_unknown_support_schema_does_not_break_older_camera_behavior(self) -> None:
+        self.managed_status = 200
+        self.managed_body = json.dumps({"cameras": [{
+            "id": "old-camera", "name": "Old camera",
+            "capabilities": {"video": True, "ptz": False}, "streams": [],
+            "support": {"schema_version": 2, "features": {"video": {"path": "local"}}},
+        }]})
+        cameras = await self.client.cameras()
+        self.assertEqual(cameras[0]["id"], "old-camera")
+        self.assertIsNone(cameras[0]["rtsp_url"])
+        self.assertNotIn("support", cameras[0])
+
     async def test_managed_stream_credentials_are_rejected(self) -> None:
         self.managed_status = 200
         self.managed_body = json.dumps({"cameras": [{

@@ -690,6 +690,63 @@ func TestManagedCameraListMatchesSharedStateFixture(t *testing.T) {
 	}
 }
 
+func TestCloneManagedCamerasCopiesNestedSupportEvidence(t *testing.T) {
+	source := []model.Camera{{
+		ID: "cam_a1b2", Name: "C201",
+		Support: &model.CameraSupport{
+			SchemaVersion: 1,
+			Features: map[string]model.FeatureSupport{
+				"video": {Implementation: "implemented", Validation: "device", Path: "camera_lan", RequiresCloud: []string{"new_session_negotiation"}},
+			},
+		},
+	}}
+	copy := cloneManagedCameras(source)
+	copy[0].Support.Features["video"] = model.FeatureSupport{Implementation: "absent", Validation: "none", Path: "unknown"}
+	if got := source[0].Support.Features["video"].Implementation; got != "implemented" {
+		t.Fatalf("mutating response changed provider feature metadata to %q", got)
+	}
+	copy = cloneManagedCameras(source)
+	feature := copy[0].Support.Features["video"]
+	feature.RequiresCloud[0] = "modified"
+	copy[0].Support.Features["video"] = feature
+	if got := source[0].Support.Features["video"].RequiresCloud[0]; got != "new_session_negotiation" {
+		t.Fatalf("mutating response changed provider cloud requirements to %q", got)
+	}
+}
+
+func TestManagedCameraListOnlyAdvertisesAvailableSupportProviders(t *testing.T) {
+	camera := model.Camera{
+		ID: "cam_a1b2", Name: "C201",
+		Capabilities: model.Capabilities{Video: true, PTZ: true, Presets: true},
+		Video:        model.VideoStatus{State: model.VideoIdle},
+		Control:      model.ControlStatus{State: model.ControlReady},
+		Support: &model.CameraSupport{SchemaVersion: 1, Features: map[string]model.FeatureSupport{
+			"video":                {Implementation: "implemented", Validation: "device", Path: "camera_lan"},
+			"ptz":                  {Implementation: "implemented", Validation: "device", Path: "camera_lan"},
+			"presets":              {Implementation: "research", Validation: "none", Path: "unknown"},
+			"camera_settings_read": {Implementation: "implemented", Validation: "offline", Path: "cloud", RequiresCloud: []string{"settings_read"}},
+		}},
+	}
+	h := NewWithProviders(config.Config{}, "secret", nil, &fakeCameraProvider{cameras: []model.Camera{camera}}, nil)
+	request := httptest.NewRequest(http.MethodGet, "/v2/cameras", nil)
+	request.Header.Set("Authorization", "Bearer secret")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	var got managedCameraList
+	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Cameras) != 1 || got.Cameras[0].Support == nil {
+		t.Fatalf("camera support metadata missing: %#v", got.Cameras)
+	}
+	if _, ok := got.Cameras[0].Support.Features["video"]; !ok || len(got.Cameras[0].Support.Features) != 1 {
+		t.Fatalf("API advertised support without injected PTZ/settings providers: %#v", got.Cameras[0].Support.Features)
+	}
+}
+
 func TestManagedCameraListIncludesAuthorizedCredentialFreeStreams(t *testing.T) {
 	camera := model.Camera{
 		ID: "cam-1", Name: "Camera",

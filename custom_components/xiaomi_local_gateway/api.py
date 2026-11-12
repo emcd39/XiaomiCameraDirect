@@ -1,6 +1,7 @@
 """Async gateway client, using Home Assistant's shared session."""
 from __future__ import annotations
 import json
+import re
 from aiohttp import ClientResponseError, ClientSession, ClientError, ClientTimeout
 from urllib.parse import quote, urlsplit
 
@@ -83,13 +84,17 @@ class GatewayClient:
                     if not isinstance(source, str) or not _valid_rtsp_url(source):
                         raise GatewayError("Invalid camera stream response")
                     break
-            normalized.append({
+            normalized_camera = {
                 "id": camera_id,
                 "name": name,
                 "model": camera.get("model", "Unknown"),
                 "rtsp_url": source,
                 "ptz": capabilities["ptz"],
-            })
+            }
+            support = _parse_camera_support(camera.get("support"))
+            if support is not None:
+                normalized_camera["support"] = support
+            normalized.append(normalized_camera)
         if len({camera["id"] for camera in normalized}) != len(normalized):
             raise GatewayError("Invalid camera inventory response")
         return normalized
@@ -189,3 +194,62 @@ def _valid_rtsp_url(value: str) -> bool:
         return parsed.scheme == "rtsp" and bool(parsed.hostname) and parsed.username is None and parsed.password is None and not parsed.query and not parsed.fragment
     except ValueError:
         return False
+
+
+_SUPPORT_FEATURES = {
+    "video", "snapshot", "audio", "audio_talkback", "ptz", "presets",
+    "camera_settings_read", "local_recording", "sd_capacity", "sd_recordings",
+    "motion_events", "privacy",
+}
+_SUPPORT_IMPLEMENTATIONS = {"absent", "research", "implemented"}
+_SUPPORT_VALIDATIONS = {"none", "offline", "device", "home_assistant"}
+_SUPPORT_PATHS = {"camera_lan", "cloud", "nvr_local", "unknown"}
+_SUPPORT_CLOUD_OPERATIONS = {
+    "account_auth", "inventory", "new_session_negotiation", "settings_read",
+}
+_SAFE_EVIDENCE_REF = re.compile(r"^[A-Za-z0-9._/#-]{0,160}$")
+
+
+def _parse_camera_support(value: object) -> dict | None:
+    """Parse only the known optional evidence schema; ignore it on old/future data."""
+    if not isinstance(value, dict) or type(value.get("schema_version")) is not int or value["schema_version"] != 1:
+        return None
+    features = value.get("features")
+    if not isinstance(features, dict):
+        return None
+    parsed = {}
+    for name, detail in features.items():
+        if name not in _SUPPORT_FEATURES or not isinstance(detail, dict):
+            continue
+        implementation = detail.get("implementation")
+        validation = detail.get("validation")
+        path = detail.get("path")
+        requires_cloud = detail.get("requires_cloud", [])
+        evidence_ref = detail.get("evidence_ref", "")
+        tested_firmware = detail.get("tested_firmware", "")
+        if (
+            not isinstance(implementation, str)
+            or implementation not in _SUPPORT_IMPLEMENTATIONS
+            or not isinstance(validation, str)
+            or validation not in _SUPPORT_VALIDATIONS
+            or not isinstance(path, str)
+            or path not in _SUPPORT_PATHS
+            or not isinstance(requires_cloud, list)
+            or len(requires_cloud) > 8
+            or any(not isinstance(item, str) or item not in _SUPPORT_CLOUD_OPERATIONS for item in requires_cloud)
+            or not isinstance(evidence_ref, str)
+            or not _SAFE_EVIDENCE_REF.fullmatch(evidence_ref)
+            or not isinstance(tested_firmware, str)
+            or len(tested_firmware) > 80
+            or (tested_firmware and not re.fullmatch(r"[A-Za-z0-9._+-]{1,80}", tested_firmware))
+        ):
+            continue
+        parsed[name] = {
+            "implementation": implementation,
+            "validation": validation,
+            "path": path,
+            "requires_cloud": list(requires_cloud),
+            **({"evidence_ref": evidence_ref} if evidence_ref else {}),
+            **({"tested_firmware": tested_firmware} if tested_firmware else {}),
+        }
+    return {"schema_version": 1, "features": parsed} if parsed else None

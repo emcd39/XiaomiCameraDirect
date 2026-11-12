@@ -368,8 +368,29 @@ func cloneManagedCameras(source []model.Camera) []model.Camera {
 		cameras[i] = camera
 		cameras[i].Video.LastFrameAt = cloneTimestamp(camera.Video.LastFrameAt)
 		cameras[i].Video.UpdatedAt = cloneTimestamp(camera.Video.UpdatedAt)
+		if camera.Support != nil {
+			support := *camera.Support
+			support.Features = make(map[string]model.FeatureSupport, len(camera.Support.Features))
+			for name, feature := range camera.Support.Features {
+				feature.RequiresCloud = append([]string{}, feature.RequiresCloud...)
+				support.Features[name] = feature
+			}
+			cameras[i].Support = &support
+		}
 	}
 	return cameras
+}
+
+func removeFeatureEvidence(camera *model.Camera, names ...string) {
+	if camera.Support == nil {
+		return
+	}
+	for _, name := range names {
+		delete(camera.Support.Features, name)
+	}
+	if len(camera.Support.Features) == 0 {
+		camera.Support = nil
+	}
 }
 
 func cloneTimestamp(source *time.Time) *time.Time {
@@ -405,6 +426,10 @@ func (h *Handler) managedList(w http.ResponseWriter, r *http.Request) {
 			cameras[i].Capabilities.PTZ = false
 			cameras[i].Capabilities.Presets = false
 			cameras[i].Control = model.ControlStatus{State: model.ControlUnsupported}
+			removeFeatureEvidence(&cameras[i], "ptz", "presets")
+		}
+		if h.settingsProvider == nil {
+			removeFeatureEvidence(&cameras[i], "camera_settings_read")
 		}
 		if err := cameras[i].Validate(); err != nil {
 			respond(w, http.StatusBadGateway, map[string]string{"error": "invalid_backend_response"})

@@ -70,18 +70,40 @@ type ControlStatus struct {
 	Reason ErrorCode    `json:"reason,omitempty"`
 }
 
+// CameraSupport is optional, versioned evidence about implementation and the
+// declared path for individual functions. Path describes the implementation
+// route known from code; it is not a packet-capture result. Validation and
+// EvidenceRef describe the level and source of supporting evidence. It does
+// not replace Capabilities: old clients keep using their stable boolean fields.
+type CameraSupport struct {
+	SchemaVersion int                       `json:"schema_version"`
+	Features      map[string]FeatureSupport `json:"features"`
+}
+
+// FeatureSupport separates shipping code from evidence collected on hardware
+// or in Home Assistant. A successful mock must never imply device support.
+type FeatureSupport struct {
+	Implementation string   `json:"implementation"`
+	Validation     string   `json:"validation"`
+	Path           string   `json:"path"`
+	RequiresCloud  []string `json:"requires_cloud"`
+	EvidenceRef    string   `json:"evidence_ref,omitempty"`
+	TestedFirmware string   `json:"tested_firmware,omitempty"`
+}
+
 // Camera is the public managed-mode view. Provider-specific credentials,
 // network addresses and raw Xiaomi identifiers do not belong here.
 type Camera struct {
-	ID           CameraID      `json:"id"`
-	Name         string        `json:"name"`
-	Model        string        `json:"model,omitempty"`
-	ModelID      string        `json:"model_id,omitempty"`
-	Firmware     string        `json:"firmware,omitempty"`
-	Selected     bool          `json:"selected"`
-	Capabilities Capabilities  `json:"capabilities"`
-	Video        VideoStatus   `json:"video"`
-	Control      ControlStatus `json:"control"`
+	ID           CameraID       `json:"id"`
+	Name         string         `json:"name"`
+	Model        string         `json:"model,omitempty"`
+	ModelID      string         `json:"model_id,omitempty"`
+	Firmware     string         `json:"firmware,omitempty"`
+	Selected     bool           `json:"selected"`
+	Capabilities Capabilities   `json:"capabilities"`
+	Video        VideoStatus    `json:"video"`
+	Control      ControlStatus  `json:"control"`
+	Support      *CameraSupport `json:"support,omitempty"`
 }
 
 func (c Camera) Validate() error {
@@ -109,5 +131,78 @@ func (c Camera) Validate() error {
 	if c.Control.State == ControlReady && !c.Capabilities.PTZ {
 		return errors.New("ready control requires PTZ capability")
 	}
+	if c.Support != nil {
+		if c.Support.SchemaVersion != 1 {
+			return errors.New("unknown support schema version")
+		}
+		if c.Support.Features == nil {
+			return errors.New("support feature map is required")
+		}
+		if len(c.Support.Features) > 32 {
+			return errors.New("too many support feature records")
+		}
+		for name, feature := range c.Support.Features {
+			if !validSupportName(name) || !validFeatureSupport(feature) {
+				return errors.New("invalid feature support evidence")
+			}
+		}
+	}
 	return nil
+}
+
+func validSupportName(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func validFeatureSupport(feature FeatureSupport) bool {
+	switch feature.Implementation {
+	case "absent", "research", "implemented":
+	default:
+		return false
+	}
+	switch feature.Validation {
+	case "none", "offline", "device", "home_assistant":
+	default:
+		return false
+	}
+	switch feature.Path {
+	case "camera_lan", "cloud", "nvr_local", "unknown":
+	default:
+		return false
+	}
+	if len(feature.RequiresCloud) > 8 {
+		return false
+	}
+	for _, requirement := range feature.RequiresCloud {
+		if !validSupportName(requirement) {
+			return false
+		}
+	}
+	return len(feature.EvidenceRef) <= 160 && validEvidenceRef(feature.EvidenceRef) && len(feature.TestedFirmware) <= 80 && validFirmwareLabel(feature.TestedFirmware)
+}
+
+func validEvidenceRef(value string) bool {
+	for _, r := range value {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '.' && r != '_' && r != '-' && r != '/' && r != '#' {
+			return false
+		}
+	}
+	return true
+}
+
+func validFirmwareLabel(value string) bool {
+	for _, r := range value {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '.' && r != '_' && r != '-' && r != '+' {
+			return false
+		}
+	}
+	return true
 }

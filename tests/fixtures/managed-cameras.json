@@ -19,6 +19,17 @@
       },
       "control": {
         "state": "unsupported"
+      },
+      "support": {
+        "schema_version": 1,
+        "features": {
+          "video": {
+            "implementation": "implemented",
+            "validation": "offline",
+            "path": "unknown",
+            "requires_cloud": []
+          }
+        }
       }
     },
     {

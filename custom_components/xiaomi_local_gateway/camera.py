@@ -39,10 +39,16 @@ class GatewayCamera(GatewayEntity, Camera):
         return camera.get("rtsp_url") if camera else None
 
     @property
-    def extra_state_attributes(self) -> dict[str, str]:
+    def extra_state_attributes(self) -> dict[str, object]:
         camera = self.coordinator.data.get(self.did, {})
         model_id = camera.get("model")
-        return {"model_id": model_id} if isinstance(model_id, str) and model_id else {}
+        attributes: dict[str, object] = {}
+        if isinstance(model_id, str) and model_id:
+            attributes["model_id"] = model_id
+        support = camera.get("support")
+        if isinstance(support, dict):
+            attributes["support"] = support
+        return attributes
 
     async def async_camera_image(self, width=None, height=None) -> bytes | None:
         camera = self.coordinator.data.get(self.did, {})
