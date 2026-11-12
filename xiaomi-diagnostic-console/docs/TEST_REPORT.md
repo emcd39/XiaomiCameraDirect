@@ -382,3 +382,10 @@ V uložené MIoT specifikaci C201 nebyla nalezena vlastnost ani událost označe
 ## Další čitelná funkce: kontrolka, lokální podklady, 2026-11-12
 
 MIoT specifikace obsahuje Indicator Light SIID 4 / PIID 1 `Switch Status` (bool, read/write/notify). Diagnostický read z 2026-11-06 vrátil `code=0`, `true`, což podle názvu property dokládá tehdejší zapnutý stav přepínače kontrolky; fyzické rozsvícení ani aktuální stav ověřeny nejsou. Není k dispozici aktuální autorizovaná relace, takže nový read se neodeslal. Žádný write nebyl proveden.
+
+## A02 diagnostický runner a regression polling UI, 2026-11-12
+
+- Samostatná sada konzole: `C:\Apps\go\bin\go.exe test ./... -count=1` v modulu `xiaomi-diagnostic-console` skončila úspěšně (`internal/console` pass).
+- `node scripts/Test-Preview-UI.js` skončil `PASS`. Log: `.test-env/evidence/test-console-20261112-181833.log`.
+- Headless UI simuloval status odpovědi s latencí 5 000 ms proti 3 500 ms intervalu. Dvě odpovědi se zpracovaly, maximální počet souběžných `/api/status` requestů byl 1; UI zobrazilo průběžný stav a šipky se po PTZ obnovily. Zůstaly zelené i regrese opožděného statusu po změně inventáře, výběru B a skrytí starého preview.
+- Šest fyzických směrových kroků uvedených v headless logu jsou pouze mock UI POSTy; nejde o nové fyzické ovládání kamery.

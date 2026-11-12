@@ -82,16 +82,55 @@ type CameraSettingsProvider interface {
 // CameraSessionDiagnostics is a metadata-only snapshot of an already-owned
 // camera session. It must not create, restart, or probe a media connection.
 type CameraSessionDiagnostics struct {
-	State          string          `json:"state"`
-	Reason         model.ErrorCode `json:"reason,omitempty"`
-	Protocol       string          `json:"protocol,omitempty"`
-	PeerClass      string          `json:"peer_class,omitempty"`
-	Frames         uint64          `json:"frames,omitempty"`
-	Bytes          uint64          `json:"bytes,omitempty"`
-	Dropped        uint64          `json:"dropped,omitempty"`
-	Replies        uint64          `json:"replies,omitempty"`
-	AudioRequested bool            `json:"audio_requested,omitempty"`
+	Operation      CameraDiagnosticOperation `json:"operation"`
+	CorrelationID  string                    `json:"correlation_id"`
+	Generation     string                    `json:"generation,omitempty"`
+	State          string                    `json:"state"`
+	Reason         model.ErrorCode           `json:"reason,omitempty"`
+	Protocol       string                    `json:"protocol,omitempty"`
+	PeerClass      string                    `json:"peer_class,omitempty"`
+	Frames         uint64                    `json:"frames,omitempty"`
+	Bytes          uint64                    `json:"bytes,omitempty"`
+	Dropped        uint64                    `json:"dropped,omitempty"`
+	Replies        uint64                    `json:"replies,omitempty"`
+	AudioRequested bool                      `json:"audio_requested,omitempty"`
+	Events         []CameraDiagnosticEvent   `json:"events"`
 }
+
+type CameraDiagnosticOperation string
+
+const (
+	DiagnosticSessionStatus     CameraDiagnosticOperation = "session_status"
+	DiagnosticTransportMetadata CameraDiagnosticOperation = "transport_metadata"
+	MaxCameraDiagnosticEvents                             = 32
+)
+
+type CameraDiagnosticRequest struct {
+	Operation          CameraDiagnosticOperation
+	CorrelationID      string
+	ExpectedGeneration string
+}
+
+// CameraDiagnosticEvent is a bounded, sanitized event record. It must never
+// contain payload bytes, raw errors, camera addresses, or caller supplied text.
+type CameraDiagnosticEvent struct {
+	Sequence      uint64                    `json:"sequence"`
+	ObservedAt    time.Time                 `json:"observed_at"`
+	Name          string                    `json:"name"`
+	Result        string                    `json:"result"`
+	Operation     CameraDiagnosticOperation `json:"operation,omitempty"`
+	CorrelationID string                    `json:"correlation_id,omitempty"`
+	Generation    string                    `json:"generation,omitempty"`
+	State         string                    `json:"state,omitempty"`
+	Protocol      string                    `json:"protocol,omitempty"`
+	PeerClass     string                    `json:"peer_class,omitempty"`
+}
+
+var (
+	ErrInvalidCameraDiagnosticOperation = errors.New("invalid camera diagnostic operation")
+	ErrStaleCameraSessionGeneration     = errors.New("stale camera session generation")
+	ErrNoActiveCameraSession            = errors.New("camera session is not active")
+)
 
 const (
 	SessionIdle        = "idle"
@@ -105,7 +144,7 @@ const (
 // CameraDiagnosticsProvider reads metadata from an existing camera session.
 // It is exposed only through the opt-in, authenticated diagnostics route.
 type CameraDiagnosticsProvider interface {
-	CameraDiagnostics(context.Context, model.CameraID) (CameraSessionDiagnostics, error)
+	CameraDiagnostics(context.Context, model.CameraID, CameraDiagnosticRequest) (CameraSessionDiagnostics, error)
 }
 
 // PTZProvider is optional. A video-only provider only needs to implement

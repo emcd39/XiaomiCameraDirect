@@ -44,6 +44,8 @@ type Options struct {
 	IncludeInventory          bool
 	CameraID                  string
 	IncludeSessionDiagnostics bool
+	SessionOperation          backend.CameraDiagnosticOperation
+	SessionGeneration         string
 	DryRun                    bool
 }
 
@@ -142,7 +144,7 @@ func (r *Runner) Collect(ctx context.Context, options Options) (Report, error) {
 		report.Operations = append(report.Operations, "GET /v2/cameras")
 	}
 	if options.IncludeSessionDiagnostics {
-		report.Operations = append(report.Operations, "GET /v2/cameras/{camera-id}/diagnostics")
+		report.Operations = append(report.Operations, "GET /v2/cameras/{camera-id}/diagnostics/"+string(sessionDiagnosticOperation(options)))
 	}
 	if options.DryRun {
 		report.Mode = "dry_run"
@@ -208,7 +210,13 @@ func (r *Runner) Collect(ctx context.Context, options Options) (Report, error) {
 			found = true
 			cameraReport := summarizeCamera(camera)
 			if options.IncludeSessionDiagnostics {
-				endpoint := baseURL + "/v2/cameras/" + url.PathEscape(string(camera.ID)) + "/diagnostics"
+				operation := sessionDiagnosticOperation(options)
+				endpoint := baseURL + "/v2/cameras/" + url.PathEscape(string(camera.ID)) + "/diagnostics/" + string(operation)
+				if options.SessionGeneration != "" {
+					query := url.Values{}
+					query.Set("generation", options.SessionGeneration)
+					endpoint += "?" + query.Encode()
+				}
 				body, diagStatus, diagErr := r.get(requestCtx, endpoint, options.Token)
 				if diagErr != nil {
 					return Report{}, diagErr
@@ -238,7 +246,11 @@ func (r *Runner) Collect(ctx context.Context, options Options) (Report, error) {
 func validateOptions(options Options) (string, string, error) {
 	if (!options.DryRun && strings.TrimSpace(options.Token) == "") ||
 		(options.CameraID != "" && !options.IncludeInventory) ||
-		(options.IncludeSessionDiagnostics && (!options.IncludeInventory || !validDiagnosticCameraID(options.CameraID))) {
+		(options.IncludeSessionDiagnostics && (!options.IncludeInventory || !validDiagnosticCameraID(options.CameraID) ||
+			(sessionDiagnosticOperation(options) != backend.DiagnosticSessionStatus && sessionDiagnosticOperation(options) != backend.DiagnosticTransportMetadata))) ||
+		(!options.IncludeSessionDiagnostics && (options.SessionOperation != "" || options.SessionGeneration != "")) ||
+		(options.SessionGeneration != "" && !validProbeSessionGeneration(options.SessionGeneration)) ||
+		(options.IncludeSessionDiagnostics && sessionDiagnosticOperation(options) == backend.DiagnosticTransportMetadata && !validProbeSessionGeneration(options.SessionGeneration)) {
 		return "", "", ErrInvalidOptions
 	}
 	if len(options.Token) > 512 || strings.ContainsAny(options.Token, "\r\n\x00") {
@@ -255,6 +267,25 @@ func validateOptions(options Options) (string, string, error) {
 	u.Path = ""
 	u.RawPath = ""
 	return strings.TrimRight(u.String(), "/"), targetClass, nil
+}
+
+func sessionDiagnosticOperation(options Options) backend.CameraDiagnosticOperation {
+	if options.SessionOperation == "" {
+		return backend.DiagnosticSessionStatus
+	}
+	return options.SessionOperation
+}
+
+func validProbeSessionGeneration(value string) bool {
+	if len(value) != len("gen_")+32 || !strings.HasPrefix(value, "gen_") {
+		return false
+	}
+	for _, char := range value[len("gen_"):] {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func validDiagnosticCameraID(value string) bool {
@@ -296,7 +327,68 @@ func sanitizeSessionDiagnostics(value backend.CameraSessionDiagnostics) *backend
 	default:
 		value.Reason = model.ErrorBackendUnavailable
 	}
+	if value.Operation != backend.DiagnosticSessionStatus && value.Operation != backend.DiagnosticTransportMetadata {
+		value.Operation = ""
+	}
+	if !validProbeCorrelationID(value.CorrelationID) {
+		value.CorrelationID = ""
+	}
+	if value.Generation != "" && !validProbeSessionGeneration(value.Generation) {
+		value.Generation = ""
+	}
+	if len(value.Events) > backend.MaxCameraDiagnosticEvents {
+		value.Events = value.Events[len(value.Events)-backend.MaxCameraDiagnosticEvents:]
+	}
+	for i := range value.Events {
+		event := &value.Events[i]
+		switch event.Name {
+		case "session_started", "session_ended", "diagnostics_read":
+		default:
+			event.Name = "unknown"
+		}
+		switch event.Result {
+		case "ok", "ended", "timeout", "canceled", "stale", "unavailable", "error":
+		default:
+			event.Result = "unknown"
+		}
+		if event.Operation != backend.DiagnosticSessionStatus && event.Operation != backend.DiagnosticTransportMetadata {
+			event.Operation = ""
+		}
+		if event.CorrelationID != "" && !validProbeCorrelationID(event.CorrelationID) {
+			event.CorrelationID = ""
+		}
+		if event.Generation != "" && !validProbeSessionGeneration(event.Generation) {
+			event.Generation = ""
+		}
+		switch event.State {
+		case "", backend.SessionIdle, backend.SessionStarting, backend.SessionStreaming, backend.SessionEnding, backend.SessionUnavailable, backend.SessionUnsupported:
+		default:
+			event.State = "unknown"
+		}
+		switch event.Protocol {
+		case "", "cs2+tcp", "cs2+udp":
+		default:
+			event.Protocol = "unknown"
+		}
+		switch event.PeerClass {
+		case "", "loopback_ip", "private_ip", "public_ip", "hostname_unverified", "unknown":
+		default:
+			event.PeerClass = "unknown"
+		}
+	}
 	return &value
+}
+
+func validProbeCorrelationID(value string) bool {
+	if len(value) != len("diag_")+32 || !strings.HasPrefix(value, "diag_") {
+		return false
+	}
+	for _, char := range value[len("diag_"):] {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func classifyTarget(host string) string {

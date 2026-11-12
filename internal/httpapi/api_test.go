@@ -61,19 +61,120 @@ type fakeCameraSettingsProvider struct {
 
 type fakeCameraDiagnosticsProvider struct {
 	*fakeCameraProvider
-	diagnostics      backend.CameraSessionDiagnostics
-	diagnosticsErr   error
-	diagnosticsCalls int
-	requestedID      model.CameraID
+	mu                 sync.Mutex
+	operationMu        sync.Mutex
+	diagnostics        backend.CameraSessionDiagnostics
+	diagnosticsErr     error
+	diagnosticsCalls   int
+	statusCalls        int
+	transportCalls     int
+	requestedID        model.CameraID
+	allowedID          model.CameraID
+	generation         string
+	blockNextTransport int
+	blockTransport     <-chan struct{}
+	enteredTransport   chan struct{}
+	events             []backend.CameraDiagnosticEvent
+	eventSequence      uint64
 }
 
-func (p *fakeCameraDiagnosticsProvider) CameraDiagnostics(ctx context.Context, id model.CameraID) (backend.CameraSessionDiagnostics, error) {
+func (p *fakeCameraDiagnosticsProvider) CameraDiagnostics(ctx context.Context, id model.CameraID, request backend.CameraDiagnosticRequest) (backend.CameraSessionDiagnostics, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return backend.CameraSessionDiagnostics{}, err
+		}
+		if p.operationMu.TryLock() {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return backend.CameraSessionDiagnostics{}, ctx.Err()
+		case <-time.After(time.Millisecond):
+		}
+	}
+	defer p.operationMu.Unlock()
+
+	p.mu.Lock()
 	p.diagnosticsCalls++
 	p.requestedID = id
+	if p.allowedID != "" && id != p.allowedID {
+		p.mu.Unlock()
+		return backend.CameraSessionDiagnostics{}, xiaomi.ErrCameraNotFound
+	}
+	if request.ExpectedGeneration != "" && request.ExpectedGeneration != p.generation {
+		p.mu.Unlock()
+		return backend.CameraSessionDiagnostics{}, backend.ErrStaleCameraSessionGeneration
+	}
+	switch request.Operation {
+	case backend.DiagnosticSessionStatus:
+		p.statusCalls++
+	case backend.DiagnosticTransportMetadata:
+		if request.ExpectedGeneration == "" || request.ExpectedGeneration != p.generation {
+			p.mu.Unlock()
+			return backend.CameraSessionDiagnostics{}, backend.ErrStaleCameraSessionGeneration
+		}
+		p.transportCalls++
+	default:
+		p.mu.Unlock()
+		return backend.CameraSessionDiagnostics{}, backend.ErrInvalidCameraDiagnosticOperation
+	}
+	blockNext := request.Operation == backend.DiagnosticTransportMetadata && p.blockNextTransport > 0
+	var release <-chan struct{}
+	if blockNext {
+		p.blockNextTransport--
+		release = p.blockTransport
+	}
+	entered := p.enteredTransport
+	response := p.diagnostics
+	response.Operation, response.CorrelationID, response.Generation = request.Operation, request.CorrelationID, p.generation
+	p.mu.Unlock()
+	if blockNext {
+		if entered != nil {
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+		}
+		select {
+		case <-ctx.Done():
+			result := "timeout"
+			if errors.Is(ctx.Err(), context.Canceled) {
+				result = "canceled"
+			}
+			p.recordFakeDiagnosticEvent(request, result, response)
+			return backend.CameraSessionDiagnostics{}, ctx.Err()
+		case <-release:
+		}
+	}
 	if err := ctx.Err(); err != nil {
 		return backend.CameraSessionDiagnostics{}, err
 	}
-	return p.diagnostics, p.diagnosticsErr
+	if p.diagnosticsErr != nil {
+		return backend.CameraSessionDiagnostics{}, p.diagnosticsErr
+	}
+	p.recordFakeDiagnosticEvent(request, "ok", response)
+	response.Events = p.eventSnapshot()
+	return response, nil
+}
+
+func (p *fakeCameraDiagnosticsProvider) recordFakeDiagnosticEvent(request backend.CameraDiagnosticRequest, result string, snapshot backend.CameraSessionDiagnostics) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.eventSequence++
+	p.events = append(p.events, backend.CameraDiagnosticEvent{
+		Sequence: p.eventSequence, ObservedAt: time.Now().UTC(), Name: "diagnostics_read", Result: result,
+		Operation: request.Operation, CorrelationID: request.CorrelationID, Generation: snapshot.Generation,
+		State: snapshot.State, Protocol: snapshot.Protocol, PeerClass: snapshot.PeerClass,
+	})
+	if len(p.events) > backend.MaxCameraDiagnosticEvents {
+		p.events = append([]backend.CameraDiagnosticEvent(nil), p.events[len(p.events)-backend.MaxCameraDiagnosticEvents:]...)
+	}
+}
+
+func (p *fakeCameraDiagnosticsProvider) eventSnapshot() []backend.CameraDiagnosticEvent {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]backend.CameraDiagnosticEvent(nil), p.events...)
 }
 
 func (p *fakeCameraSettingsProvider) CameraSettings(_ context.Context, id model.CameraID) (backend.CameraSettings, error) {
@@ -821,9 +922,11 @@ func TestCameraSessionDiagnosticsRouteIsAuthenticatedAndOptIn(t *testing.T) {
 		diagnostics: backend.CameraSessionDiagnostics{
 			State: backend.SessionStreaming, Protocol: "cs2+tcp", PeerClass: "private_ip", Frames: 42, Bytes: 8192,
 		},
+		allowedID:  "xiaomi_0123456789abcdef",
+		generation: "gen_0123456789abcdef0123456789abcdef",
 	}
 	info := RuntimeInfo{InstanceID: "inst_0123456789abcdef0123456789abcdef", APIVersion: ManagedAPIVersion, Features: []string{"camera_selection"}}
-	route := "/v2/cameras/xiaomi_0123456789abcdef/diagnostics"
+	route := "/v2/cameras/xiaomi_0123456789abcdef/diagnostics/session_status"
 
 	defaultHandler := NewWithRuntimeInfo(config.Config{}, "secret", nil, provider, nil, info)
 	defaultRequest := httptest.NewRequest(http.MethodGet, route, nil)
@@ -853,8 +956,19 @@ func TestCameraSessionDiagnosticsRouteIsAuthenticatedAndOptIn(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.State != backend.SessionStreaming || got.PeerClass != "private_ip" || got.Frames != 42 {
+	if got.Operation != backend.DiagnosticSessionStatus || got.CorrelationID == "" || got.Generation != provider.generation || got.State != backend.SessionStreaming || got.PeerClass != "" || got.Frames != 0 {
 		t.Fatalf("diagnostics response = %#v", got)
+	}
+	transportRequest := httptest.NewRequest(http.MethodGet, route[:strings.LastIndex(route, "/")]+"/transport_metadata?generation="+provider.generation, nil)
+	transportRequest.Header.Set("Authorization", "Bearer secret")
+	transportResponse := httptest.NewRecorder()
+	enabledHandler.ServeHTTP(transportResponse, transportRequest)
+	var transport backend.CameraSessionDiagnostics
+	if err := json.Unmarshal(transportResponse.Body.Bytes(), &transport); err != nil {
+		t.Fatal(err)
+	}
+	if transportResponse.Code != http.StatusOK || transport.Operation != backend.DiagnosticTransportMetadata || transport.PeerClass != "private_ip" || transport.Frames != 42 || transport.CorrelationID == "" {
+		t.Fatalf("transport diagnostics = %d %#v", transportResponse.Code, transport)
 	}
 	infoRequest := httptest.NewRequest(http.MethodGet, "/v2/info", nil)
 	infoRequest.Header.Set("Authorization", "Bearer secret")
@@ -872,13 +986,173 @@ func TestCameraSessionDiagnosticsRouteHonorsRequestCancellation(t *testing.T) {
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	request := httptest.NewRequest(http.MethodGet, "/v2/cameras/xiaomi_0123456789abcdef/diagnostics", nil).WithContext(ctx)
+	request := httptest.NewRequest(http.MethodGet, "/v2/cameras/xiaomi_0123456789abcdef/diagnostics/session_status", nil).WithContext(ctx)
 	request.Header.Set("Authorization", "Bearer secret")
 	response := httptest.NewRecorder()
 	h.ServeHTTP(response, request)
-	if response.Code != http.StatusRequestTimeout || provider.diagnosticsCalls != 1 || !strings.Contains(response.Body.String(), `"error":"timeout"`) {
+	if response.Code != http.StatusRequestTimeout || provider.diagnosticsCalls != 0 || !strings.Contains(response.Body.String(), `"error":"timeout"`) || !strings.Contains(response.Body.String(), `"correlation_id":"diag_`) {
 		t.Fatalf("canceled diagnostics = %d calls=%d body=%s", response.Code, provider.diagnosticsCalls, response.Body.String())
 	}
+}
+
+func TestRunningGatewayDiagnosticsChecksIdentityGenerationCancellationAndEventLimit(t *testing.T) {
+	const (
+		cameraID   = model.CameraID("xiaomi_0123456789abcdef")
+		generation = "gen_0123456789abcdef0123456789abcdef"
+	)
+	release := make(chan struct{})
+	entered := make(chan struct{}, 2)
+	provider := &fakeCameraDiagnosticsProvider{
+		fakeCameraProvider: &fakeCameraProvider{},
+		diagnostics: backend.CameraSessionDiagnostics{
+			State: backend.SessionStreaming, Protocol: "cs2+tcp", PeerClass: "private_ip", Frames: 7, Bytes: 4096,
+		},
+		allowedID: cameraID, generation: generation,
+		blockNextTransport: 2, blockTransport: release, enteredTransport: entered,
+	}
+	handler := NewWithRuntimeInfo(config.Config{}, "isolated-test-token", nil, provider, nil, RuntimeInfo{
+		InstanceID: "inst_0123456789abcdef0123456789abcdef", APIVersion: ManagedAPIVersion,
+		EnableDiagnostics: true,
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	client := server.Client()
+	base := server.URL + "/v2/cameras/" + string(cameraID) + "/diagnostics/"
+	request := func(ctx context.Context, target string) (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer isolated-test-token")
+		return client.Do(req)
+	}
+	readResponse := func(target string) (*http.Response, backend.CameraSessionDiagnostics, error) {
+		response, err := request(context.Background(), target)
+		if err != nil {
+			return nil, backend.CameraSessionDiagnostics{}, err
+		}
+		defer response.Body.Close()
+		var body backend.CameraSessionDiagnostics
+		decodeErr := json.NewDecoder(response.Body).Decode(&body)
+		return response, body, decodeErr
+	}
+
+	statusResponse, status, err := readResponse(base + string(backend.DiagnosticSessionStatus))
+	if err != nil || statusResponse.StatusCode != http.StatusOK || status.Generation != generation || !strings.HasPrefix(status.CorrelationID, "diag_") {
+		t.Fatalf("initial status response=%v body=%#v err=%v", statusResponse, status, err)
+	}
+	wrongResponse, _, err := readResponse(server.URL + "/v2/cameras/xiaomi_fedcba9876543210/diagnostics/" + string(backend.DiagnosticSessionStatus))
+	if err != nil || wrongResponse.StatusCode != http.StatusNotFound {
+		t.Fatalf("foreign camera response=%v err=%v", wrongResponse, err)
+	}
+	provider.mu.Lock()
+	statusCalls, transportCalls := provider.statusCalls, provider.transportCalls
+	provider.mu.Unlock()
+	if statusCalls != 1 || transportCalls != 0 {
+		t.Fatalf("foreign ID reached an operation: status=%d transport=%d", statusCalls, transportCalls)
+	}
+	staleResponse, _, err := readResponse(base + string(backend.DiagnosticTransportMetadata) + "?generation=gen_ffffffffffffffffffffffffffffffff")
+	if err != nil || staleResponse.StatusCode != http.StatusConflict {
+		t.Fatalf("stale generation response=%v err=%v", staleResponse, err)
+	}
+	provider.mu.Lock()
+	transportCalls = provider.transportCalls
+	provider.mu.Unlock()
+	if transportCalls != 0 {
+		t.Fatalf("stale generation reached transport operation %d times", transportCalls)
+	}
+
+	transportURL := base + string(backend.DiagnosticTransportMetadata) + "?generation=" + generation
+	deadlineCtx, deadlineCancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer deadlineCancel()
+	deadlineRequestDone := make(chan error, 1)
+	go func() {
+		response, requestErr := request(deadlineCtx, transportURL)
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		deadlineRequestDone <- requestErr
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("timed transport operation did not enter fake session")
+	}
+	if err := <-deadlineRequestDone; err == nil {
+		t.Fatal("client deadline did not cancel the running diagnostics request")
+	}
+	if !provider.waitForEventResult("canceled", time.Second) {
+		t.Fatal("deadline-canceled request was not recorded")
+	}
+
+	cancelCtx, cancelRequest := context.WithCancel(context.Background())
+	canceledRequestDone := make(chan error, 1)
+	go func() {
+		response, requestErr := request(cancelCtx, transportURL)
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		canceledRequestDone <- requestErr
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("second transport operation did not enter fake session")
+	}
+	cancelRequest()
+	if err := <-canceledRequestDone; err == nil {
+		t.Fatal("canceled diagnostics request unexpectedly succeeded")
+	}
+	if !provider.waitForEventResult("canceled", time.Second) {
+		t.Fatal("canceled request was not recorded")
+	}
+
+	finalResponse, final, err := readResponse(transportURL)
+	if err != nil || finalResponse.StatusCode != http.StatusOK || final.Generation != generation || final.Protocol != "cs2+tcp" {
+		t.Fatalf("operation did not recover after cancellation: response=%v body=%#v err=%v", finalResponse, final, err)
+	}
+	for i := 0; i < backend.MaxCameraDiagnosticEvents+8; i++ {
+		response, _, readErr := readResponse(base + string(backend.DiagnosticSessionStatus))
+		if readErr != nil || response.StatusCode != http.StatusOK {
+			t.Fatalf("status event fill %d: response=%v error=%v", i, response, readErr)
+		}
+	}
+	boundedResponse, bounded, err := readResponse(base + string(backend.DiagnosticSessionStatus))
+	if err != nil || boundedResponse.StatusCode != http.StatusOK || len(bounded.Events) != backend.MaxCameraDiagnosticEvents {
+		t.Fatalf("event ring length = %d; response=%v err=%v", len(bounded.Events), boundedResponse, err)
+	}
+	if bounded.Events[0].Sequence <= 1 || bounded.Events[len(bounded.Events)-1].Sequence <= bounded.Events[0].Sequence {
+		t.Fatalf("event ring did not retain the bounded newest sequence: %#v", bounded.Events)
+	}
+	encoded, err := json.Marshal(bounded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"isolated-test-token", "10.17.0.9", "203.0.113.8", "rtsp://", "private payload"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Errorf("diagnostics response leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func (p *fakeCameraDiagnosticsProvider) waitForEventResult(result string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		p.mu.Lock()
+		found := false
+		for _, event := range p.events {
+			if event.Result == result {
+				found = true
+				break
+			}
+		}
+		p.mu.Unlock()
+		if found {
+			return true
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return false
 }
 
 func TestManagedCameraListIncludesAuthorizedCredentialFreeStreams(t *testing.T) {

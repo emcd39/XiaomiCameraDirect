@@ -304,7 +304,7 @@ func (s *fakeCameraSession) stats() (diagnosticCalls, writes, closeCount int, di
 
 func TestCameraDiagnosticsReadsExistingSessionWithoutOpeningOrReading(t *testing.T) {
 	provider, id, source, run, session, path := newProviderStepFixture(true, true)
-	got, err := provider.CameraDiagnostics(context.Background(), id)
+	got, err := provider.CameraDiagnostics(context.Background(), id, testTransportDiagnosticsRequest(run.generation))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,13 +325,52 @@ func TestCameraDiagnosticsReadsExistingSessionWithoutOpeningOrReading(t *testing
 	}
 }
 
+func TestCameraDiagnosticsRejectsStaleGenerationAndBoundsEvents(t *testing.T) {
+	provider, id, _, run, session, _ := newProviderStepFixture(true, true)
+	request := testTransportDiagnosticsRequest("gen_ffffffffffffffffffffffffffffffff")
+	if _, err := provider.CameraDiagnostics(context.Background(), id, request); !errors.Is(err, backend.ErrStaleCameraSessionGeneration) {
+		t.Fatalf("stale generation error = %v", err)
+	}
+	if session.diagnosticsCalls != 0 {
+		t.Fatalf("stale generation reached session metadata %d times", session.diagnosticsCalls)
+	}
+
+	for i := 1; i <= backend.MaxCameraDiagnosticEvents+8; i++ {
+		request := backend.CameraDiagnosticRequest{
+			Operation: backend.DiagnosticSessionStatus, CorrelationID: fmt.Sprintf("diag_%032x", i),
+		}
+		got, err := provider.CameraDiagnostics(context.Background(), id, request)
+		if err != nil {
+			t.Fatalf("status event %d: %v", i, err)
+		}
+		if len(got.Events) > backend.MaxCameraDiagnosticEvents {
+			t.Fatalf("returned %d events; limit is %d", len(got.Events), backend.MaxCameraDiagnosticEvents)
+		}
+	}
+	last, err := provider.CameraDiagnostics(context.Background(), id, backend.CameraDiagnosticRequest{
+		Operation: backend.DiagnosticSessionStatus, CorrelationID: "diag_ffffffffffffffffffffffffffffffff",
+	})
+	if err != nil || len(last.Events) != backend.MaxCameraDiagnosticEvents {
+		t.Fatalf("bounded event snapshot length=%d error=%v", len(last.Events), err)
+	}
+	if last.Events[0].Sequence <= 1 || last.Events[len(last.Events)-1].Sequence <= last.Events[0].Sequence {
+		t.Fatalf("event ring did not retain the newest records: %#v", last.Events)
+	}
+	if last.Generation != run.generation || last.CorrelationID != "diag_ffffffffffffffffffffffffffffffff" {
+		t.Fatalf("status correlation/generation = %#v", last)
+	}
+	if _, writes, closes, _ := session.stats(); writes != 0 || closes != 0 || session.diagnosticsCalls != 0 {
+		t.Fatalf("status/stale operations touched media: stats=%d writes=%d closes=%d", session.diagnosticsCalls, writes, closes)
+	}
+}
+
 func TestCameraDiagnosticsHonorsTimeoutDuringMetadataRead(t *testing.T) {
 	provider, id, source, run, session, path := newProviderStepFixture(true, true)
 	block := make(chan struct{})
 	session.diagnosticsBlock = block
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	_, err := provider.CameraDiagnostics(ctx, id)
+	_, err := provider.CameraDiagnostics(ctx, id, testTransportDiagnosticsRequest(run.generation))
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("diagnostics error = %v, want deadline exceeded", err)
 	}
@@ -344,6 +383,10 @@ func TestCameraDiagnosticsHonorsTimeoutDuringMetadataRead(t *testing.T) {
 	if diagnostics, writes, closes, _ := session.stats(); diagnostics != 0 || writes != 0 || closes != 0 || path.closeCountValue() != 0 {
 		t.Fatalf("timed-out diagnostics had side effects: ptz=%d writes=%d closes=%d path_closes=%d", diagnostics, writes, closes, path.closeCountValue())
 	}
+	close(block)
+	if _, err := provider.CameraDiagnostics(context.Background(), id, testTransportDiagnosticsRequest(run.generation)); err != nil {
+		t.Fatalf("diagnostic lock remained held after timeout: %v", err)
+	}
 }
 
 func TestCameraDiagnosticsHonorsCancellationWhileWaitingForSourceLock(t *testing.T) {
@@ -351,7 +394,7 @@ func TestCameraDiagnosticsHonorsCancellationWhileWaitingForSourceLock(t *testing
 	source.mu.Lock()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	_, err := provider.CameraDiagnostics(ctx, id)
+	_, err := provider.CameraDiagnostics(ctx, id, testTransportDiagnosticsRequest(run.generation))
 	source.mu.Unlock()
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("diagnostics error = %v, want deadline exceeded", err)
@@ -371,7 +414,7 @@ func newProviderStepFixture(pathReady, writeOK bool) (*Provider, model.CameraID,
 func newProviderStepFixtureForID(id model.CameraID, pathReady, writeOK bool) (*Provider, model.CameraID, *cameraSource, *cameraSessionRun, *fakeCameraSession, *fakeCameraPath) {
 	path := newFakeCameraPath(pathReady)
 	session := newFakeCameraSession(writeOK)
-	run := &cameraSessionRun{session: session, path: path, ending: make(chan struct{})}
+	run := &cameraSessionRun{session: session, path: path, generation: "gen_0123456789abcdef0123456789abcdef", ending: make(chan struct{})}
 	source := &cameraSource{
 		device:  &cloud.Device{Model: supportedModel},
 		id:      id,
@@ -385,6 +428,13 @@ func newProviderStepFixtureForID(id model.CameraID, pathReady, writeOK bool) (*P
 	}
 	source.provider = provider
 	return provider, id, source, run, session, path
+}
+
+func testTransportDiagnosticsRequest(generation string) backend.CameraDiagnosticRequest {
+	return backend.CameraDiagnosticRequest{
+		Operation: backend.DiagnosticTransportMetadata, CorrelationID: "diag_0123456789abcdef0123456789abcdef",
+		ExpectedGeneration: generation,
+	}
 }
 
 func TestProviderStepUsesExactlyTheExistingReadySession(t *testing.T) {

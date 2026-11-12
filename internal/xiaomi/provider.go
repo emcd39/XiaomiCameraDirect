@@ -5,6 +5,7 @@ package xiaomi
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
@@ -153,24 +154,35 @@ func (s *liveCameraSession) DiagnosticMotorStepObserved(direction string, onWrit
 	return result.WriteSucceeded(), result.SanitizedLine()
 }
 
-// CameraDiagnostics snapshots only the already-owned session, if one exists.
-// It never refreshes cloud inventory, negotiates MISS, opens a socket, or reads
-// a frame. Lock acquisition and the metadata read honor the caller deadline.
-func (p *Provider) CameraDiagnostics(ctx context.Context, id model.CameraID) (backend.CameraSessionDiagnostics, error) {
+// CameraDiagnostics performs an allowlisted read against the already-owned
+// session. It never refreshes inventory, negotiates MISS, opens a socket, or
+// reads a frame. The session lifecycle lock pins the exact run during metadata
+// reads and every lock wait honors the request deadline.
+func (p *Provider) CameraDiagnostics(ctx context.Context, id model.CameraID, request backend.CameraDiagnosticRequest) (backend.CameraSessionDiagnostics, error) {
 	if ctx == nil {
 		return backend.CameraSessionDiagnostics{}, context.Canceled
 	}
+	if p == nil {
+		return backend.CameraSessionDiagnostics{}, ErrCameraUnavailable
+	}
+	if request.Operation != backend.DiagnosticSessionStatus && request.Operation != backend.DiagnosticTransportMetadata {
+		return backend.CameraSessionDiagnostics{}, backend.ErrInvalidCameraDiagnosticOperation
+	}
+	if request.CorrelationID == "" || len(request.CorrelationID) > 64 {
+		return backend.CameraSessionDiagnostics{}, backend.ErrInvalidCameraDiagnosticOperation
+	}
+	if request.Operation == backend.DiagnosticTransportMetadata && !validSessionGeneration(request.ExpectedGeneration) {
+		return backend.CameraSessionDiagnostics{}, backend.ErrStaleCameraSessionGeneration
+	}
 	var source *cameraSource
 	var knownDevice *cloud.Device
+	providerClosed := false
 	for {
 		if err := ctx.Err(); err != nil {
 			return backend.CameraSessionDiagnostics{}, err
 		}
 		if p.mu.TryRLock() {
-			if p.closed {
-				p.mu.RUnlock()
-				return backend.CameraSessionDiagnostics{State: backend.SessionUnavailable, Reason: model.ErrorBackendUnavailable}, nil
-			}
+			providerClosed = p.closed
 			source = p.sources[id]
 			for _, device := range p.devices {
 				if device != nil && device.IsCamera() && cameraID(device.Did) == id {
@@ -185,72 +197,197 @@ func (p *Provider) CameraDiagnostics(ctx context.Context, id model.CameraID) (ba
 			return backend.CameraSessionDiagnostics{}, err
 		}
 	}
+	if providerClosed {
+		return backend.CameraSessionDiagnostics{Operation: request.Operation, CorrelationID: request.CorrelationID, State: backend.SessionUnavailable, Reason: model.ErrorBackendUnavailable}, nil
+	}
 	if source == nil {
 		if knownDevice == nil {
 			return backend.CameraSessionDiagnostics{}, ErrCameraNotFound
 		}
-		if knownDevice.Model != supportedModel {
-			return backend.CameraSessionDiagnostics{State: backend.SessionUnsupported, Reason: model.ErrorUnsupportedModel}, nil
+		if request.ExpectedGeneration != "" {
+			return backend.CameraSessionDiagnostics{}, backend.ErrStaleCameraSessionGeneration
 		}
-		return backend.CameraSessionDiagnostics{State: backend.SessionIdle}, nil
+		if request.Operation == backend.DiagnosticTransportMetadata {
+			return backend.CameraSessionDiagnostics{}, backend.ErrNoActiveCameraSession
+		}
+		if knownDevice.Model != supportedModel {
+			return backend.CameraSessionDiagnostics{Operation: request.Operation, CorrelationID: request.CorrelationID, State: backend.SessionUnsupported, Reason: model.ErrorUnsupportedModel}, nil
+		}
+		return backend.CameraSessionDiagnostics{Operation: request.Operation, CorrelationID: request.CorrelationID, State: backend.SessionIdle}, nil
 	}
+	if err := lockDiagnosticContext(ctx, &source.lifecycleMu); err != nil {
+		source.recordDiagnosticEvent(request, "diagnostics_read", diagnosticResult(err), nil)
+		return backend.CameraSessionDiagnostics{}, err
+	}
+	defer source.lifecycleMu.Unlock()
 
+	// Validate that inventory still points at this exact source and pin its run.
 	var run *cameraSessionRun
 	var path cameraPath
 	var starting, closed, failed bool
 	for {
 		if err := ctx.Err(); err != nil {
+			source.recordDiagnosticEvent(request, "diagnostics_read", diagnosticResult(err), nil)
 			return backend.CameraSessionDiagnostics{}, err
+		}
+		p.mu.RLock()
+		if p.closed || p.sources[id] != source {
+			p.mu.RUnlock()
+			source.recordDiagnosticEvent(request, "diagnostics_read", "stale", nil)
+			return backend.CameraSessionDiagnostics{}, backend.ErrStaleCameraSessionGeneration
 		}
 		if source.mu.TryLock() {
-			run = source.session
-			path = source.path
-			starting = source.starting != nil
-			closed = source.closed
-			failed = source.lastErr != nil
+			run, path = source.session, source.path
+			starting, closed, failed = source.starting != nil, source.closed, source.lastErr != nil
 			source.mu.Unlock()
+			p.mu.RUnlock()
 			break
 		}
+		p.mu.RUnlock()
 		if err := waitDiagnosticLock(ctx); err != nil {
+			source.recordDiagnosticEvent(request, "diagnostics_read", diagnosticResult(err), nil)
 			return backend.CameraSessionDiagnostics{}, err
 		}
-	}
-	if closed {
-		return backend.CameraSessionDiagnostics{State: backend.SessionUnavailable, Reason: model.ErrorBackendUnavailable}, nil
-	}
-	if run == nil {
-		if starting {
-			return backend.CameraSessionDiagnostics{State: backend.SessionStarting}, nil
-		}
-		if failed {
-			return backend.CameraSessionDiagnostics{State: backend.SessionUnavailable, Reason: model.ErrorBackendUnavailable}, nil
-		}
-		return backend.CameraSessionDiagnostics{State: backend.SessionIdle}, nil
-	}
-	if run.isEnding() {
-		return backend.CameraSessionDiagnostics{State: backend.SessionEnding}, nil
 	}
 
-	diagnostics := backend.CameraSessionDiagnostics{State: backend.SessionStarting}
-	if path != nil && path.Ready() {
-		diagnostics.State = backend.SessionStreaming
+	state := backend.SessionIdle
+	switch {
+	case closed:
+		state = backend.SessionUnavailable
+	case run == nil && starting:
+		state = backend.SessionStarting
+	case run == nil && failed:
+		state = backend.SessionUnavailable
+	case run != nil && run.isEnding():
+		state = backend.SessionEnding
+	case run != nil && path != nil && path.Ready():
+		state = backend.SessionStreaming
+	case run != nil:
+		state = backend.SessionStarting
 	}
-	if reader, ok := run.session.(cameraSessionDiagnostics); ok {
-		metadata, err := reader.CameraSessionDiagnostics(ctx)
-		if err != nil {
-			return backend.CameraSessionDiagnostics{}, err
+	diagnostics := backend.CameraSessionDiagnostics{
+		Operation: request.Operation, CorrelationID: request.CorrelationID, State: state,
+	}
+	if run == nil || run.isEnding() || run.session == nil {
+		if request.ExpectedGeneration != "" {
+			source.recordDiagnosticEvent(request, "diagnostics_read", "stale", &diagnostics)
+			return backend.CameraSessionDiagnostics{}, backend.ErrStaleCameraSessionGeneration
 		}
-		metadata.State = diagnostics.State
-		metadata.Protocol = safeSessionProtocol(metadata.Protocol)
-		metadata.PeerClass = safeSessionPeerClass(metadata.PeerClass)
-		diagnostics = metadata
-	} else if run.session != nil {
-		diagnostics.Protocol = safeSessionProtocol(run.session.Protocol())
+		if request.Operation == backend.DiagnosticTransportMetadata {
+			source.recordDiagnosticEvent(request, "diagnostics_read", "unavailable", &diagnostics)
+			return backend.CameraSessionDiagnostics{}, backend.ErrNoActiveCameraSession
+		}
+		if state == backend.SessionUnavailable {
+			diagnostics.Reason = model.ErrorBackendUnavailable
+		}
+		source.recordDiagnosticEvent(request, "diagnostics_read", "ok", &diagnostics)
+		diagnostics.Events = source.diagnosticEventSnapshot()
+		return diagnostics, nil
+	}
+	diagnostics.Generation = run.generation
+	if request.ExpectedGeneration != "" && request.ExpectedGeneration != run.generation {
+		source.recordDiagnosticEvent(request, "diagnostics_read", "stale", &diagnostics)
+		return backend.CameraSessionDiagnostics{}, backend.ErrStaleCameraSessionGeneration
+	}
+	if request.Operation == backend.DiagnosticTransportMetadata {
+		if request.ExpectedGeneration != run.generation {
+			source.recordDiagnosticEvent(request, "diagnostics_read", "stale", &diagnostics)
+			return backend.CameraSessionDiagnostics{}, backend.ErrStaleCameraSessionGeneration
+		}
+		if reader, ok := run.session.(cameraSessionDiagnostics); ok {
+			metadata, err := reader.CameraSessionDiagnostics(ctx)
+			if err != nil {
+				source.recordDiagnosticEvent(request, "diagnostics_read", diagnosticResult(err), &diagnostics)
+				return backend.CameraSessionDiagnostics{}, err
+			}
+			diagnostics.Protocol = safeSessionProtocol(metadata.Protocol)
+			diagnostics.PeerClass = safeSessionPeerClass(metadata.PeerClass)
+			diagnostics.Frames, diagnostics.Bytes = metadata.Frames, metadata.Bytes
+			diagnostics.Dropped, diagnostics.Replies = metadata.Dropped, metadata.Replies
+			diagnostics.AudioRequested = metadata.AudioRequested
+		} else {
+			diagnostics.Protocol = safeSessionProtocol(run.session.Protocol())
+		}
 	}
 	if err := ctx.Err(); err != nil {
+		source.recordDiagnosticEvent(request, "diagnostics_read", diagnosticResult(err), &diagnostics)
 		return backend.CameraSessionDiagnostics{}, err
 	}
+	source.recordDiagnosticEvent(request, "diagnostics_read", "ok", &diagnostics)
+	diagnostics.Events = source.diagnosticEventSnapshot()
 	return diagnostics, nil
+}
+
+func lockDiagnosticContext(ctx context.Context, mutex *sync.Mutex) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if mutex.TryLock() {
+			return nil
+		}
+		if err := waitDiagnosticLock(ctx); err != nil {
+			return err
+		}
+	}
+}
+
+func validSessionGeneration(value string) bool {
+	if len(value) != len("gen_")+32 || !strings.HasPrefix(value, "gen_") {
+		return false
+	}
+	for _, char := range value[len("gen_"):] {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func diagnosticResult(err error) string {
+	switch {
+	case err == nil:
+		return "ok"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, backend.ErrStaleCameraSessionGeneration):
+		return "stale"
+	case errors.Is(err, backend.ErrNoActiveCameraSession):
+		return "unavailable"
+	default:
+		return "error"
+	}
+}
+
+func (s *cameraSource) recordDiagnosticEvent(request backend.CameraDiagnosticRequest, name, result string, state *backend.CameraSessionDiagnostics) {
+	if s == nil {
+		return
+	}
+	event := backend.CameraDiagnosticEvent{
+		ObservedAt: time.Now().UTC(), Name: name, Result: result,
+		Operation: request.Operation, CorrelationID: request.CorrelationID,
+	}
+	if state != nil {
+		event.Generation, event.State = state.Generation, state.State
+		event.Protocol, event.PeerClass = state.Protocol, state.PeerClass
+	}
+	s.diagnosticEventsMu.Lock()
+	defer s.diagnosticEventsMu.Unlock()
+	s.diagnosticSequence++
+	event.Sequence = s.diagnosticSequence
+	s.diagnosticEvents = append(s.diagnosticEvents, event)
+	if len(s.diagnosticEvents) > backend.MaxCameraDiagnosticEvents {
+		copy(s.diagnosticEvents, s.diagnosticEvents[len(s.diagnosticEvents)-backend.MaxCameraDiagnosticEvents:])
+		s.diagnosticEvents = s.diagnosticEvents[:backend.MaxCameraDiagnosticEvents]
+	}
+}
+
+func (s *cameraSource) diagnosticEventSnapshot() []backend.CameraDiagnosticEvent {
+	s.diagnosticEventsMu.Lock()
+	defer s.diagnosticEventsMu.Unlock()
+	return append([]backend.CameraDiagnosticEvent(nil), s.diagnosticEvents...)
 }
 
 func waitDiagnosticLock(ctx context.Context) error {
@@ -307,9 +444,10 @@ type cameraPath interface {
 }
 
 type cameraSessionRun struct {
-	session cameraSession
-	path    cameraPath
-	ending  chan struct{} // closed under cameraSource.mu when this run begins termination
+	session    cameraSession
+	path       cameraPath
+	generation string
+	ending     chan struct{} // closed under cameraSource.mu when this run begins termination
 }
 
 func (run *cameraSessionRun) isEnding() bool {
@@ -330,14 +468,17 @@ type cameraSource struct {
 	// lifecycleMu serializes accepted PTZ steps with retirement. When both locks
 	// are needed, acquire lifecycleMu before mu; termination marking releases mu
 	// before it waits for lifecycleMu.
-	lifecycleMu sync.Mutex
-	session     *cameraSessionRun
-	path        cameraPath
-	sessionDone chan struct{}
-	starting    chan struct{}
-	startErr    error
-	lastErr     error
-	closed      bool
+	lifecycleMu        sync.Mutex
+	diagnosticEventsMu sync.Mutex
+	diagnosticEvents   []backend.CameraDiagnosticEvent
+	diagnosticSequence uint64
+	session            *cameraSessionRun
+	path               cameraPath
+	sessionDone        chan struct{}
+	starting           chan struct{}
+	startErr           error
+	lastErr            error
+	closed             bool
 }
 
 // New restores a Xiaomi account from its pass token and starts the local RTSP
@@ -895,6 +1036,11 @@ func (s *cameraSource) start(path cameraPath, done, starting chan struct{}) {
 		transportLabel = "auto"
 	}
 	log.Printf("xiaomi_backend event=session_negotiate result=ok vendor=%s media_transport=%s", missSession.Vendor, transportLabel)
+	generation, err := newSessionGeneration()
+	if err != nil {
+		s.failStart(path, done, errors.New("camera session could not be identified"))
+		return
+	}
 	host := s.device.IP
 	if net.ParseIP(host) == nil {
 		log.Printf("xiaomi_backend event=camera_address result=unavailable")
@@ -927,11 +1073,22 @@ func (s *cameraSource) start(path cameraPath, done, starting chan struct{}) {
 		s.failStart(path, done, ErrCameraUnavailable)
 		return
 	}
-	run := &cameraSessionRun{session: session, path: path, ending: make(chan struct{})}
+	run := &cameraSessionRun{session: session, path: path, generation: generation, ending: make(chan struct{})}
 	s.session = run
 	s.lastErr = nil
+	s.recordDiagnosticEvent(backend.CameraDiagnosticRequest{}, "session_started", "ok", &backend.CameraSessionDiagnostics{
+		Generation: generation, State: backend.SessionStarting, Protocol: safeSessionProtocol(session.Protocol()),
+	})
 	s.mu.Unlock()
 	go s.readFrames(run, done)
+}
+
+func newSessionGeneration() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", err
+	}
+	return "gen_" + hex.EncodeToString(value[:]), nil
 }
 
 func mediaTransportPreference(vendor string) (string, bool) {
@@ -1115,6 +1272,11 @@ func (s *cameraSource) retireSession(run *cameraSessionRun, terminal error) {
 		s.lastErr = terminal
 	}
 	s.mu.Unlock()
+	if owned {
+		s.recordDiagnosticEvent(backend.CameraDiagnosticRequest{}, "session_ended", "ended", &backend.CameraSessionDiagnostics{
+			Generation: run.generation, State: backend.SessionUnavailable, Protocol: safeSessionProtocol(run.session.Protocol()),
+		})
+	}
 	s.lifecycleMu.Unlock()
 }
 

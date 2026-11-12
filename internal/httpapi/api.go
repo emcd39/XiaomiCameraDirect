@@ -3,7 +3,9 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -162,7 +164,7 @@ func newWithRuntimeInfo(cfg config.Config, token string, ptz PTZ, cameras backen
 	mux.HandleFunc("GET /v2/cameras/{id}/settings", h.managedSettings)
 	mux.HandleFunc("GET /v2/cameras/{id}/snapshot", h.managedSnapshot)
 	if runtimeInfo.EnableDiagnostics {
-		mux.HandleFunc("GET /v2/cameras/{id}/diagnostics", h.managedCameraDiagnostics)
+		mux.HandleFunc("GET /v2/cameras/{id}/diagnostics/{operation}", h.managedCameraDiagnostics)
 	}
 	mux.HandleFunc("POST /v2/cameras/{id}/ptz/step", h.managedStepOnce)
 	if state != nil {
@@ -247,24 +249,105 @@ func (h *Handler) managedCameraDiagnostics(w http.ResponseWriter, r *http.Reques
 		respond(w, http.StatusBadRequest, map[string]string{"error": "invalid_camera_id"})
 		return
 	}
+	operation := backend.CameraDiagnosticOperation(r.PathValue("operation"))
+	if operation != backend.DiagnosticSessionStatus && operation != backend.DiagnosticTransportMetadata {
+		respond(w, http.StatusBadRequest, map[string]string{"error": "invalid_diagnostic_operation"})
+		return
+	}
+	query := r.URL.Query()
+	for key, values := range query {
+		if key != "generation" || len(values) != 1 {
+			respond(w, http.StatusBadRequest, map[string]string{"error": "invalid_diagnostic_request"})
+			return
+		}
+	}
+	generation := query.Get("generation")
+	if (generation != "" && !validDiagnosticGeneration(generation)) ||
+		(operation == backend.DiagnosticTransportMetadata && generation == "") {
+		respond(w, http.StatusBadRequest, map[string]string{"error": "invalid_diagnostic_generation"})
+		return
+	}
+	correlationID, err := newDiagnosticCorrelationID()
+	if err != nil {
+		respond(w, http.StatusServiceUnavailable, map[string]string{"error": string(model.ErrorBackendUnavailable)})
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
-	diagnostics, err := h.diagnosticsProvider.CameraDiagnostics(ctx, model.CameraID(id))
+	diagnostics, err := h.diagnosticsProvider.CameraDiagnostics(ctx, model.CameraID(id), backend.CameraDiagnosticRequest{
+		Operation: operation, CorrelationID: correlationID, ExpectedGeneration: generation,
+	})
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-			respond(w, http.StatusRequestTimeout, map[string]string{"error": string(model.ErrorTimeout)})
+			respondDiagnosticError(w, http.StatusRequestTimeout, string(model.ErrorTimeout), correlationID)
+		case errors.Is(err, backend.ErrInvalidCameraDiagnosticOperation):
+			respondDiagnosticError(w, http.StatusBadRequest, "invalid_diagnostic_operation", correlationID)
+		case errors.Is(err, backend.ErrStaleCameraSessionGeneration), errors.Is(err, backend.ErrNoActiveCameraSession):
+			respondDiagnosticError(w, http.StatusConflict, string(model.ErrorStale), correlationID)
 		case errors.Is(err, xiaomi.ErrCameraNotFound):
-			respond(w, http.StatusNotFound, map[string]string{"error": "camera_not_found"})
+			respondDiagnosticError(w, http.StatusNotFound, "camera_not_found", correlationID)
 		default:
-			respond(w, http.StatusServiceUnavailable, map[string]string{"error": string(model.ErrorBackendUnavailable)})
+			respondDiagnosticError(w, http.StatusServiceUnavailable, string(model.ErrorBackendUnavailable), correlationID)
 		}
 		return
+	}
+	diagnostics.CorrelationID = correlationID
+	diagnostics.Operation = operation
+	if operation == backend.DiagnosticSessionStatus {
+		diagnostics.Protocol, diagnostics.PeerClass = "", ""
+		diagnostics.Frames, diagnostics.Bytes, diagnostics.Dropped, diagnostics.Replies = 0, 0, 0, 0
+		diagnostics.AudioRequested = false
 	}
 	respond(w, http.StatusOK, sanitizeSessionDiagnostics(diagnostics))
 }
 
+func respondDiagnosticError(w http.ResponseWriter, status int, reason, correlationID string) {
+	respond(w, status, map[string]string{"error": reason, "correlation_id": correlationID})
+}
+
+func newDiagnosticCorrelationID() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", err
+	}
+	return "diag_" + hex.EncodeToString(value[:]), nil
+}
+
+func validDiagnosticGeneration(value string) bool {
+	if len(value) != len("gen_")+32 || !strings.HasPrefix(value, "gen_") {
+		return false
+	}
+	for _, char := range value[len("gen_"):] {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func validDiagnosticCorrelationID(value string) bool {
+	if len(value) != len("diag_")+32 || !strings.HasPrefix(value, "diag_") {
+		return false
+	}
+	for _, char := range value[len("diag_"):] {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 func sanitizeSessionDiagnostics(value backend.CameraSessionDiagnostics) backend.CameraSessionDiagnostics {
+	if value.Operation != backend.DiagnosticSessionStatus && value.Operation != backend.DiagnosticTransportMetadata {
+		value.Operation = ""
+	}
+	if !validDiagnosticCorrelationID(value.CorrelationID) {
+		value.CorrelationID = ""
+	}
+	if value.Generation != "" && !validDiagnosticGeneration(value.Generation) {
+		value.Generation = ""
+	}
 	switch value.State {
 	case backend.SessionIdle, backend.SessionStarting, backend.SessionStreaming,
 		backend.SessionEnding, backend.SessionUnavailable, backend.SessionUnsupported:
@@ -291,7 +374,53 @@ func sanitizeSessionDiagnostics(value backend.CameraSessionDiagnostics) backend.
 	default:
 		value.Reason = model.ErrorBackendUnavailable
 	}
+	if len(value.Events) > backend.MaxCameraDiagnosticEvents {
+		value.Events = value.Events[len(value.Events)-backend.MaxCameraDiagnosticEvents:]
+	}
+	for i := range value.Events {
+		event := &value.Events[i]
+		switch event.Name {
+		case "session_started", "session_ended", "diagnostics_read":
+		default:
+			event.Name = "unknown"
+		}
+		switch event.Result {
+		case "ok", "ended", "timeout", "canceled", "stale", "unavailable", "error":
+		default:
+			event.Result = "unknown"
+		}
+		if event.Operation != backend.DiagnosticSessionStatus && event.Operation != backend.DiagnosticTransportMetadata {
+			event.Operation = ""
+		}
+		if event.CorrelationID != "" && !validDiagnosticCorrelationID(event.CorrelationID) {
+			event.CorrelationID = ""
+		}
+		if event.Generation != "" && !validDiagnosticGeneration(event.Generation) {
+			event.Generation = ""
+		}
+		event.State = safeDiagnosticState(event.State)
+		switch event.Protocol {
+		case "", "cs2+tcp", "cs2+udp":
+		default:
+			event.Protocol = "unknown"
+		}
+		switch event.PeerClass {
+		case "", "loopback_ip", "private_ip", "public_ip", "hostname_unverified", "unknown":
+		default:
+			event.PeerClass = "unknown"
+		}
+	}
 	return value
+}
+
+func safeDiagnosticState(value string) string {
+	switch value {
+	case "", backend.SessionIdle, backend.SessionStarting, backend.SessionStreaming,
+		backend.SessionEnding, backend.SessionUnavailable, backend.SessionUnsupported:
+		return value
+	default:
+		return "unknown"
+	}
 }
 
 type managedStepRequest struct {
