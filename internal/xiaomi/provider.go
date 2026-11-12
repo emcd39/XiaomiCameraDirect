@@ -126,12 +126,176 @@ type liveCameraSession struct {
 	session *stream.Session
 }
 
+type cameraSessionDiagnostics interface {
+	CameraSessionDiagnostics(context.Context) (backend.CameraSessionDiagnostics, error)
+}
+
 func (s *liveCameraSession) Read() (*stream.Frame, error) { return s.session.Read() }
 func (s *liveCameraSession) Close()                       { s.session.Close() }
 func (s *liveCameraSession) Protocol() string             { return s.session.Protocol }
+func (s *liveCameraSession) CameraSessionDiagnostics(ctx context.Context) (backend.CameraSessionDiagnostics, error) {
+	if err := ctx.Err(); err != nil {
+		return backend.CameraSessionDiagnostics{}, err
+	}
+	stats := s.session.Stats()
+	return backend.CameraSessionDiagnostics{
+		Protocol:       safeSessionProtocol(s.session.Protocol),
+		PeerClass:      sessionPeerClass(s.session.RemoteAddr),
+		Frames:         stats.Frames,
+		Bytes:          stats.Bytes,
+		Dropped:        stats.Dropped,
+		Replies:        stats.Replies,
+		AudioRequested: stats.AudioAsked,
+	}, ctx.Err()
+}
 func (s *liveCameraSession) DiagnosticMotorStepObserved(direction string, onWrite func()) (bool, string) {
 	result := s.session.DiagnosticMotorStepObserved(direction, onWrite)
 	return result.WriteSucceeded(), result.SanitizedLine()
+}
+
+// CameraDiagnostics snapshots only the already-owned session, if one exists.
+// It never refreshes cloud inventory, negotiates MISS, opens a socket, or reads
+// a frame. Lock acquisition and the metadata read honor the caller deadline.
+func (p *Provider) CameraDiagnostics(ctx context.Context, id model.CameraID) (backend.CameraSessionDiagnostics, error) {
+	if ctx == nil {
+		return backend.CameraSessionDiagnostics{}, context.Canceled
+	}
+	var source *cameraSource
+	var knownDevice *cloud.Device
+	for {
+		if err := ctx.Err(); err != nil {
+			return backend.CameraSessionDiagnostics{}, err
+		}
+		if p.mu.TryRLock() {
+			if p.closed {
+				p.mu.RUnlock()
+				return backend.CameraSessionDiagnostics{State: backend.SessionUnavailable, Reason: model.ErrorBackendUnavailable}, nil
+			}
+			source = p.sources[id]
+			for _, device := range p.devices {
+				if device != nil && device.IsCamera() && cameraID(device.Did) == id {
+					knownDevice = device
+					break
+				}
+			}
+			p.mu.RUnlock()
+			break
+		}
+		if err := waitDiagnosticLock(ctx); err != nil {
+			return backend.CameraSessionDiagnostics{}, err
+		}
+	}
+	if source == nil {
+		if knownDevice == nil {
+			return backend.CameraSessionDiagnostics{}, ErrCameraNotFound
+		}
+		if knownDevice.Model != supportedModel {
+			return backend.CameraSessionDiagnostics{State: backend.SessionUnsupported, Reason: model.ErrorUnsupportedModel}, nil
+		}
+		return backend.CameraSessionDiagnostics{State: backend.SessionIdle}, nil
+	}
+
+	var run *cameraSessionRun
+	var path cameraPath
+	var starting, closed, failed bool
+	for {
+		if err := ctx.Err(); err != nil {
+			return backend.CameraSessionDiagnostics{}, err
+		}
+		if source.mu.TryLock() {
+			run = source.session
+			path = source.path
+			starting = source.starting != nil
+			closed = source.closed
+			failed = source.lastErr != nil
+			source.mu.Unlock()
+			break
+		}
+		if err := waitDiagnosticLock(ctx); err != nil {
+			return backend.CameraSessionDiagnostics{}, err
+		}
+	}
+	if closed {
+		return backend.CameraSessionDiagnostics{State: backend.SessionUnavailable, Reason: model.ErrorBackendUnavailable}, nil
+	}
+	if run == nil {
+		if starting {
+			return backend.CameraSessionDiagnostics{State: backend.SessionStarting}, nil
+		}
+		if failed {
+			return backend.CameraSessionDiagnostics{State: backend.SessionUnavailable, Reason: model.ErrorBackendUnavailable}, nil
+		}
+		return backend.CameraSessionDiagnostics{State: backend.SessionIdle}, nil
+	}
+	if run.isEnding() {
+		return backend.CameraSessionDiagnostics{State: backend.SessionEnding}, nil
+	}
+
+	diagnostics := backend.CameraSessionDiagnostics{State: backend.SessionStarting}
+	if path != nil && path.Ready() {
+		diagnostics.State = backend.SessionStreaming
+	}
+	if reader, ok := run.session.(cameraSessionDiagnostics); ok {
+		metadata, err := reader.CameraSessionDiagnostics(ctx)
+		if err != nil {
+			return backend.CameraSessionDiagnostics{}, err
+		}
+		metadata.State = diagnostics.State
+		metadata.Protocol = safeSessionProtocol(metadata.Protocol)
+		metadata.PeerClass = safeSessionPeerClass(metadata.PeerClass)
+		diagnostics = metadata
+	} else if run.session != nil {
+		diagnostics.Protocol = safeSessionProtocol(run.session.Protocol())
+	}
+	if err := ctx.Err(); err != nil {
+		return backend.CameraSessionDiagnostics{}, err
+	}
+	return diagnostics, nil
+}
+
+func waitDiagnosticLock(ctx context.Context) error {
+	timer := time.NewTimer(5 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func safeSessionProtocol(value string) string {
+	if value == "cs2+tcp" || value == "cs2+udp" {
+		return value
+	}
+	return "unknown"
+}
+
+func safeSessionPeerClass(value string) string {
+	switch value {
+	case "loopback_ip", "private_ip", "public_ip", "hostname_unverified", "unknown":
+		return value
+	default:
+		return "unknown"
+	}
+}
+
+func sessionPeerClass(address string) string {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		host = address
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if ip == nil {
+		return "hostname_unverified"
+	}
+	if ip.IsLoopback() {
+		return "loopback_ip"
+	}
+	if ip.IsPrivate() || ip.IsLinkLocalUnicast() {
+		return "private_ip"
+	}
+	return "public_ip"
 }
 
 type cameraPath interface {
@@ -279,6 +443,8 @@ func (p *Provider) Cameras(ctx context.Context) ([]model.Camera, error) {
 			}
 			camera.Video = source.videoStatus()
 			sources[id] = source
+		} else {
+			camera.Support = unsupportedModelSupportEvidence()
 		}
 		cameras = append(cameras, camera)
 	}
@@ -297,6 +463,8 @@ func c201SupportEvidence() *model.CameraSupport {
 				Implementation: "implemented",
 				Validation:     "device",
 				Path:           "camera_lan",
+				Availability:   "unknown",
+				Reason:         model.ErrorUnverifiedFirmware,
 				RequiresCloud:  []string{"account_auth", "inventory", "new_session_negotiation"},
 				EvidenceRef:    "TEST_REPORT.md#latest-c201-l2-decode-7-nov-2026",
 				TestedFirmware: "5.3.2_0016",
@@ -305,6 +473,8 @@ func c201SupportEvidence() *model.CameraSupport {
 				Implementation: "implemented",
 				Validation:     "offline",
 				Path:           "camera_lan",
+				Availability:   "unknown",
+				Reason:         model.ErrorUnverifiedFirmware,
 				RequiresCloud:  []string{"account_auth", "inventory", "new_session_negotiation"},
 				EvidenceRef:    ".test-env/evidence/test-local-20261112-162635-f49fca83.log#ha-camera-proxy",
 			},
@@ -312,6 +482,8 @@ func c201SupportEvidence() *model.CameraSupport {
 				Implementation: "implemented",
 				Validation:     "device",
 				Path:           "camera_lan",
+				Availability:   "unknown",
+				Reason:         model.ErrorUnverifiedFirmware,
 				RequiresCloud:  []string{"account_auth", "inventory", "new_session_negotiation"},
 				EvidenceRef:    "TEST_REPORT.md#four-physical-directions-12-nov-2026",
 				TestedFirmware: "5.3.2_0016",
@@ -320,11 +492,28 @@ func c201SupportEvidence() *model.CameraSupport {
 				Implementation: "implemented",
 				Validation:     "offline",
 				Path:           "cloud",
+				Availability:   "unknown",
+				Reason:         model.ErrorUnverifiedFirmware,
 				RequiresCloud:  []string{"account_auth", "inventory", "settings_read"},
 				EvidenceRef:    ".test-env/evidence/test-local-20261112-162635-f49fca83.log#late-settings",
 			},
 		},
 	}
+}
+
+func unsupportedModelSupportEvidence() *model.CameraSupport {
+	features := make(map[string]model.FeatureSupport)
+	for _, name := range []string{"video", "snapshot", "audio", "ptz", "presets", "camera_settings_read"} {
+		features[name] = model.FeatureSupport{
+			Implementation: "research",
+			Validation:     "none",
+			Path:           "unknown",
+			Availability:   "unavailable",
+			Reason:         model.ErrorUnsupportedModel,
+			RequiresCloud:  []string{},
+		}
+	}
+	return &model.CameraSupport{SchemaVersion: 1, Features: features}
 }
 
 func (p *Provider) cameraDevices() ([]*cloud.Device, error) {

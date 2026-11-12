@@ -79,6 +79,35 @@ type CameraSettingsProvider interface {
 	CameraSettings(context.Context, model.CameraID) (CameraSettings, error)
 }
 
+// CameraSessionDiagnostics is a metadata-only snapshot of an already-owned
+// camera session. It must not create, restart, or probe a media connection.
+type CameraSessionDiagnostics struct {
+	State          string          `json:"state"`
+	Reason         model.ErrorCode `json:"reason,omitempty"`
+	Protocol       string          `json:"protocol,omitempty"`
+	PeerClass      string          `json:"peer_class,omitempty"`
+	Frames         uint64          `json:"frames,omitempty"`
+	Bytes          uint64          `json:"bytes,omitempty"`
+	Dropped        uint64          `json:"dropped,omitempty"`
+	Replies        uint64          `json:"replies,omitempty"`
+	AudioRequested bool            `json:"audio_requested,omitempty"`
+}
+
+const (
+	SessionIdle        = "idle"
+	SessionStarting    = "starting"
+	SessionStreaming   = "streaming"
+	SessionEnding      = "ending"
+	SessionUnavailable = "unavailable"
+	SessionUnsupported = "unsupported"
+)
+
+// CameraDiagnosticsProvider reads metadata from an existing camera session.
+// It is exposed only through the opt-in, authenticated diagnostics route.
+type CameraDiagnosticsProvider interface {
+	CameraDiagnostics(context.Context, model.CameraID) (CameraSessionDiagnostics, error)
+}
+
 // PTZProvider is optional. A video-only provider only needs to implement
 // CameraProvider and should report PTZ as unsupported for its cameras.
 type PTZProvider interface {

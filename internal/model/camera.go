@@ -50,6 +50,10 @@ const (
 	ErrorWrongRegionOrEmptyAccount ErrorCode = "wrong_region_or_empty_account"
 	ErrorUnsupportedModel          ErrorCode = "unsupported_model"
 	ErrorUnsupportedTransport      ErrorCode = "unsupported_transport"
+	ErrorUnverifiedFirmware        ErrorCode = "unverified_firmware"
+	ErrorChannelUnverified         ErrorCode = "channel_unverified"
+	ErrorTimeout                   ErrorCode = "timeout"
+	ErrorStale                     ErrorCode = "stale"
 	ErrorLANUnreachable            ErrorCode = "lan_unreachable"
 	ErrorStreamTimeout             ErrorCode = "stream_timeout"
 	ErrorCodecUnsupported          ErrorCode = "codec_unsupported"
@@ -83,12 +87,14 @@ type CameraSupport struct {
 // FeatureSupport separates shipping code from evidence collected on hardware
 // or in Home Assistant. A successful mock must never imply device support.
 type FeatureSupport struct {
-	Implementation string   `json:"implementation"`
-	Validation     string   `json:"validation"`
-	Path           string   `json:"path"`
-	RequiresCloud  []string `json:"requires_cloud"`
-	EvidenceRef    string   `json:"evidence_ref,omitempty"`
-	TestedFirmware string   `json:"tested_firmware,omitempty"`
+	Implementation string    `json:"implementation"`
+	Validation     string    `json:"validation"`
+	Path           string    `json:"path"`
+	Availability   string    `json:"availability,omitempty"`
+	Reason         ErrorCode `json:"reason,omitempty"`
+	RequiresCloud  []string  `json:"requires_cloud"`
+	EvidenceRef    string    `json:"evidence_ref,omitempty"`
+	TestedFirmware string    `json:"tested_firmware,omitempty"`
 }
 
 // Camera is the public managed-mode view. Provider-specific credentials,
@@ -107,6 +113,15 @@ type Camera struct {
 }
 
 func (c Camera) Validate() error {
+	if err := c.ValidateCore(); err != nil {
+		return err
+	}
+	return c.ValidateSupport()
+}
+
+// ValidateCore validates required camera state without treating optional
+// support metadata as a reason to discard a compatible inventory entry.
+func (c Camera) ValidateCore() error {
 	if strings.TrimSpace(string(c.ID)) == "" {
 		return errors.New("camera id is required")
 	}
@@ -131,20 +146,25 @@ func (c Camera) Validate() error {
 	if c.Control.State == ControlReady && !c.Capabilities.PTZ {
 		return errors.New("ready control requires PTZ capability")
 	}
-	if c.Support != nil {
-		if c.Support.SchemaVersion != 1 {
-			return errors.New("unknown support schema version")
-		}
-		if c.Support.Features == nil {
-			return errors.New("support feature map is required")
-		}
-		if len(c.Support.Features) > 32 {
-			return errors.New("too many support feature records")
-		}
-		for name, feature := range c.Support.Features {
-			if !validSupportName(name) || !validFeatureSupport(feature) {
-				return errors.New("invalid feature support evidence")
-			}
+	return nil
+}
+
+func (c Camera) ValidateSupport() error {
+	if c.Support == nil {
+		return nil
+	}
+	if c.Support.SchemaVersion != 1 {
+		return errors.New("unknown support schema version")
+	}
+	if c.Support.Features == nil {
+		return errors.New("support feature map is required")
+	}
+	if len(c.Support.Features) > 32 {
+		return errors.New("too many support feature records")
+	}
+	for name, feature := range c.Support.Features {
+		if !validSupportName(name) || !validFeatureSupport(feature) {
+			return errors.New("invalid feature support evidence")
 		}
 	}
 	return nil
@@ -178,6 +198,14 @@ func validFeatureSupport(feature FeatureSupport) bool {
 	default:
 		return false
 	}
+	switch feature.Availability {
+	case "", "available", "unavailable", "unknown":
+	default:
+		return false
+	}
+	if !validSupportReason(feature.Reason) || (feature.Availability == "available" && feature.Reason != "") || (feature.Availability == "unavailable" && feature.Reason == "") {
+		return false
+	}
 	if len(feature.RequiresCloud) > 8 {
 		return false
 	}
@@ -187,6 +215,18 @@ func validFeatureSupport(feature FeatureSupport) bool {
 		}
 	}
 	return len(feature.EvidenceRef) <= 160 && validEvidenceRef(feature.EvidenceRef) && len(feature.TestedFirmware) <= 80 && validFirmwareLabel(feature.TestedFirmware)
+}
+
+func validSupportReason(reason ErrorCode) bool {
+	switch reason {
+	case "", ErrorAuthRequired, ErrorWrongRegionOrEmptyAccount, ErrorUnsupportedModel,
+		ErrorUnsupportedTransport, ErrorUnverifiedFirmware, ErrorChannelUnverified,
+		ErrorTimeout, ErrorStale, ErrorLANUnreachable, ErrorStreamTimeout,
+		ErrorCodecUnsupported, ErrorBackendUnavailable, ErrorStorage, ErrorAPIIncompatible:
+		return true
+	default:
+		return false
+	}
 }
 
 func validEvidenceRef(value string) bool {

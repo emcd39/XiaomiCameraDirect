@@ -27,6 +27,8 @@
             "implementation": "implemented",
             "validation": "offline",
             "path": "unknown",
+            "availability": "unknown",
+            "reason": "unverified_firmware",
             "requires_cloud": []
           }
         }

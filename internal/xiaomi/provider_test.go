@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/backend"
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/model"
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/xiaomi/protocol/cloud"
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/xiaomi/protocol/stream"
@@ -223,6 +224,8 @@ type fakeCameraSession struct {
 	writeOK           bool
 	diagnosticEntered chan struct{}
 	releaseDiagnostic <-chan struct{}
+	diagnosticsCalls  int
+	diagnosticsBlock  <-chan struct{}
 }
 
 func newFakeCameraSession(writeOK bool) *fakeCameraSession {
@@ -254,6 +257,23 @@ func (s *fakeCameraSession) Close() {
 
 func (s *fakeCameraSession) Protocol() string { return "cs2+tcp" }
 
+func (s *fakeCameraSession) CameraSessionDiagnostics(ctx context.Context) (backend.CameraSessionDiagnostics, error) {
+	s.mu.Lock()
+	s.diagnosticsCalls++
+	block := s.diagnosticsBlock
+	s.mu.Unlock()
+	if block != nil {
+		select {
+		case <-ctx.Done():
+			return backend.CameraSessionDiagnostics{}, ctx.Err()
+		case <-block:
+		}
+	}
+	return backend.CameraSessionDiagnostics{
+		Protocol: "cs2+tcp", PeerClass: "private_ip", Frames: 17, Bytes: 4096, Dropped: 2, Replies: 1,
+	}, ctx.Err()
+}
+
 func (s *fakeCameraSession) DiagnosticMotorStepObserved(direction string, onWrite func()) (bool, string) {
 	s.mu.Lock()
 	s.diagnosticCalls++
@@ -280,6 +300,68 @@ func (s *fakeCameraSession) stats() (diagnosticCalls, writes, closeCount int, di
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.diagnosticCalls, s.writes, s.closeCount, append([]string(nil), s.directions...)
+}
+
+func TestCameraDiagnosticsReadsExistingSessionWithoutOpeningOrReading(t *testing.T) {
+	provider, id, source, run, session, path := newProviderStepFixture(true, true)
+	got, err := provider.CameraDiagnostics(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != backend.SessionStreaming || got.Protocol != "cs2+tcp" || got.PeerClass != "private_ip" || got.Frames != 17 || got.Bytes != 4096 {
+		t.Fatalf("session diagnostics = %#v", got)
+	}
+	source.mu.Lock()
+	stillSameSession := source.session == run && source.path == path
+	source.mu.Unlock()
+	if !stillSameSession {
+		t.Fatal("diagnostics replaced or retired the gateway's active session")
+	}
+	if diagnostics, writes, closes, _ := session.stats(); diagnostics != 0 || writes != 0 || closes != 0 || session.diagnosticsCalls != 1 || len(session.reads) != 0 {
+		t.Fatalf("diagnostics had side effects: ptz=%d writes=%d closes=%d snapshots=%d queued_reads=%d", diagnostics, writes, closes, session.diagnosticsCalls, len(session.reads))
+	}
+	if path.closeCountValue() != 0 {
+		t.Fatal("diagnostics closed the media path")
+	}
+}
+
+func TestCameraDiagnosticsHonorsTimeoutDuringMetadataRead(t *testing.T) {
+	provider, id, source, run, session, path := newProviderStepFixture(true, true)
+	block := make(chan struct{})
+	session.diagnosticsBlock = block
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := provider.CameraDiagnostics(ctx, id)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("diagnostics error = %v, want deadline exceeded", err)
+	}
+	source.mu.Lock()
+	stillSameSession := source.session == run && source.path == path
+	source.mu.Unlock()
+	if !stillSameSession {
+		t.Fatal("timed-out diagnostics changed the session")
+	}
+	if diagnostics, writes, closes, _ := session.stats(); diagnostics != 0 || writes != 0 || closes != 0 || path.closeCountValue() != 0 {
+		t.Fatalf("timed-out diagnostics had side effects: ptz=%d writes=%d closes=%d path_closes=%d", diagnostics, writes, closes, path.closeCountValue())
+	}
+}
+
+func TestCameraDiagnosticsHonorsCancellationWhileWaitingForSourceLock(t *testing.T) {
+	provider, id, source, run, session, path := newProviderStepFixture(true, true)
+	source.mu.Lock()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := provider.CameraDiagnostics(ctx, id)
+	source.mu.Unlock()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("diagnostics error = %v, want deadline exceeded", err)
+	}
+	if source.session != run || source.path != path {
+		t.Fatal("canceled diagnostics changed the active source")
+	}
+	if diagnostics, writes, closes, _ := session.stats(); diagnostics != 0 || writes != 0 || closes != 0 {
+		t.Fatalf("canceled diagnostics reached the session: ptz=%d writes=%d closes=%d", diagnostics, writes, closes)
+	}
 }
 
 func newProviderStepFixture(pathReady, writeOK bool) (*Provider, model.CameraID, *cameraSource, *cameraSessionRun, *fakeCameraSession, *fakeCameraPath) {

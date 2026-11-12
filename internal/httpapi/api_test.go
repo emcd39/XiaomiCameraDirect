@@ -59,6 +59,23 @@ type fakeCameraSettingsProvider struct {
 	requestedID   model.CameraID
 }
 
+type fakeCameraDiagnosticsProvider struct {
+	*fakeCameraProvider
+	diagnostics      backend.CameraSessionDiagnostics
+	diagnosticsErr   error
+	diagnosticsCalls int
+	requestedID      model.CameraID
+}
+
+func (p *fakeCameraDiagnosticsProvider) CameraDiagnostics(ctx context.Context, id model.CameraID) (backend.CameraSessionDiagnostics, error) {
+	p.diagnosticsCalls++
+	p.requestedID = id
+	if err := ctx.Err(); err != nil {
+		return backend.CameraSessionDiagnostics{}, err
+	}
+	return p.diagnostics, p.diagnosticsErr
+}
+
 func (p *fakeCameraSettingsProvider) CameraSettings(_ context.Context, id model.CameraID) (backend.CameraSettings, error) {
 	p.settingsCalls++
 	p.requestedID = id
@@ -744,6 +761,123 @@ func TestManagedCameraListOnlyAdvertisesAvailableSupportProviders(t *testing.T) 
 	}
 	if _, ok := got.Cameras[0].Support.Features["video"]; !ok || len(got.Cameras[0].Support.Features) != 1 {
 		t.Fatalf("API advertised support without injected PTZ/settings providers: %#v", got.Cameras[0].Support.Features)
+	}
+}
+
+func TestManagedCameraListDropsInvalidOptionalSupportPerCamera(t *testing.T) {
+	valid := model.Camera{
+		ID: "cam_valid", Name: "Valid",
+		Capabilities: model.Capabilities{Video: true},
+		Video:        model.VideoStatus{State: model.VideoIdle},
+		Control:      model.ControlStatus{State: model.ControlUnsupported},
+		Support: &model.CameraSupport{SchemaVersion: 1, Features: map[string]model.FeatureSupport{
+			"video": {Implementation: "implemented", Validation: "offline", Path: "camera_lan", Availability: "available", RequiresCloud: []string{}},
+		}},
+	}
+	unknownVersion := model.Camera{
+		ID: "cam_future", Name: "Future schema",
+		Capabilities: model.Capabilities{Video: true},
+		Video:        model.VideoStatus{State: model.VideoIdle},
+		Control:      model.ControlStatus{State: model.ControlUnsupported},
+		Support:      &model.CameraSupport{SchemaVersion: 2, Features: map[string]model.FeatureSupport{}},
+	}
+	malformed := model.Camera{
+		ID: "cam_malformed", Name: "Malformed support",
+		Capabilities: model.Capabilities{Video: true},
+		Video:        model.VideoStatus{State: model.VideoIdle},
+		Control:      model.ControlStatus{State: model.ControlUnsupported},
+		Support: &model.CameraSupport{SchemaVersion: 1, Features: map[string]model.FeatureSupport{
+			"video": {Implementation: "invented", Validation: "offline", Path: "camera_lan", Availability: "available", RequiresCloud: []string{}},
+		}},
+	}
+	h := NewWithProviders(config.Config{}, "secret", nil, &fakeCameraProvider{cameras: []model.Camera{valid, unknownVersion, malformed}}, nil)
+	request := httptest.NewRequest(http.MethodGet, "/v2/cameras", nil)
+	request.Header.Set("Authorization", "Bearer secret")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 with optional metadata ignored: %s", response.Code, response.Body.String())
+	}
+	var got managedCameraList
+	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Cameras) != 3 {
+		t.Fatalf("mixed camera inventory length = %d, want 3", len(got.Cameras))
+	}
+	for _, camera := range got.Cameras {
+		if !camera.Capabilities.Video {
+			t.Errorf("optional support failure changed capability on %q", camera.ID)
+		}
+	}
+	if got.Cameras[0].Support == nil || got.Cameras[1].Support != nil || got.Cameras[2].Support != nil {
+		t.Fatalf("support normalization was not isolated per camera: %#v", got.Cameras)
+	}
+}
+
+func TestCameraSessionDiagnosticsRouteIsAuthenticatedAndOptIn(t *testing.T) {
+	provider := &fakeCameraDiagnosticsProvider{
+		fakeCameraProvider: &fakeCameraProvider{},
+		diagnostics: backend.CameraSessionDiagnostics{
+			State: backend.SessionStreaming, Protocol: "cs2+tcp", PeerClass: "private_ip", Frames: 42, Bytes: 8192,
+		},
+	}
+	info := RuntimeInfo{InstanceID: "inst_0123456789abcdef0123456789abcdef", APIVersion: ManagedAPIVersion, Features: []string{"camera_selection"}}
+	route := "/v2/cameras/xiaomi_0123456789abcdef/diagnostics"
+
+	defaultHandler := NewWithRuntimeInfo(config.Config{}, "secret", nil, provider, nil, info)
+	defaultRequest := httptest.NewRequest(http.MethodGet, route, nil)
+	defaultRequest.Header.Set("Authorization", "Bearer secret")
+	defaultResponse := httptest.NewRecorder()
+	defaultHandler.ServeHTTP(defaultResponse, defaultRequest)
+	if defaultResponse.Code != http.StatusNotFound || provider.diagnosticsCalls != 0 {
+		t.Fatalf("diagnostics route should be disabled by default: status=%d calls=%d", defaultResponse.Code, provider.diagnosticsCalls)
+	}
+
+	info.EnableDiagnostics = true
+	enabledHandler := NewWithRuntimeInfo(config.Config{}, "secret", nil, provider, nil, info)
+	unauthorized := httptest.NewRecorder()
+	enabledHandler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, route, nil))
+	if unauthorized.Code != http.StatusUnauthorized || provider.diagnosticsCalls != 0 {
+		t.Fatalf("unauthorized diagnostics response = %d, provider calls=%d", unauthorized.Code, provider.diagnosticsCalls)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, route, nil)
+	request.Header.Set("Authorization", "Bearer secret")
+	response := httptest.NewRecorder()
+	enabledHandler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || provider.diagnosticsCalls != 1 || provider.requestedID != "xiaomi_0123456789abcdef" {
+		t.Fatalf("authorized diagnostics = %d calls=%d id=%q: %s", response.Code, provider.diagnosticsCalls, provider.requestedID, response.Body.String())
+	}
+	var got backend.CameraSessionDiagnostics
+	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.State != backend.SessionStreaming || got.PeerClass != "private_ip" || got.Frames != 42 {
+		t.Fatalf("diagnostics response = %#v", got)
+	}
+	infoRequest := httptest.NewRequest(http.MethodGet, "/v2/info", nil)
+	infoRequest.Header.Set("Authorization", "Bearer secret")
+	infoResponse := httptest.NewRecorder()
+	enabledHandler.ServeHTTP(infoResponse, infoRequest)
+	if infoResponse.Code != http.StatusOK || !strings.Contains(infoResponse.Body.String(), `"camera_session_diagnostics"`) {
+		t.Fatalf("enabled /v2/info did not advertise diagnostics: status=%d body=%s", infoResponse.Code, infoResponse.Body.String())
+	}
+}
+
+func TestCameraSessionDiagnosticsRouteHonorsRequestCancellation(t *testing.T) {
+	provider := &fakeCameraDiagnosticsProvider{fakeCameraProvider: &fakeCameraProvider{}}
+	h := NewWithRuntimeInfo(config.Config{}, "secret", nil, provider, nil, RuntimeInfo{
+		InstanceID: "inst_0123456789abcdef0123456789abcdef", APIVersion: ManagedAPIVersion, EnableDiagnostics: true,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	request := httptest.NewRequest(http.MethodGet, "/v2/cameras/xiaomi_0123456789abcdef/diagnostics", nil).WithContext(ctx)
+	request.Header.Set("Authorization", "Bearer secret")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusRequestTimeout || provider.diagnosticsCalls != 1 || !strings.Contains(response.Body.String(), `"error":"timeout"`) {
+		t.Fatalf("canceled diagnostics = %d calls=%d body=%s", response.Code, provider.diagnosticsCalls, response.Body.String())
 	}
 }
 

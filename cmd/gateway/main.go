@@ -71,6 +71,7 @@ func (p *configuredPTZProvider) Preset(ctx context.Context, id model.CameraID, t
 func main() {
 	path := flag.String("config", "config.json", "Gateway configuration file")
 	managed := flag.Bool("managed", false, "Start an empty managed-mode runtime")
+	enableDiagnostics := flag.Bool("enable-diagnostics", false, "Enable the authenticated metadata-only camera session diagnostics route")
 	listen := flag.String("listen", "127.0.0.1:8099", "Managed-mode HTTP listener")
 	dataDir := flag.String("data-dir", "/data", "Managed-mode persistent data directory")
 	check := flag.Bool("check-config", false, "Validate and exit")
@@ -107,7 +108,7 @@ func main() {
 			defer xiaomiProvider.Close()
 		}
 	}
-	handler, err := newHandler(cfg, token, *managed, *dataDir, ptzClient, cameras)
+	handler, err := newHandlerWithDiagnostics(cfg, token, *managed, *dataDir, ptzClient, *enableDiagnostics, cameras)
 	if err != nil {
 		log.Fatalf("create gateway handler: %v", err)
 	}
@@ -144,6 +145,10 @@ func openManagedStore(dataDir string) (*store.Store, error) {
 }
 
 func newHandler(cfg config.Config, token string, managed bool, dataDir string, ptzClient *onvif.Client, cameraProviders ...backend.CameraProvider) (http.Handler, error) {
+	return newHandlerWithDiagnostics(cfg, token, managed, dataDir, ptzClient, false, cameraProviders...)
+}
+
+func newHandlerWithDiagnostics(cfg config.Config, token string, managed bool, dataDir string, ptzClient *onvif.Client, enableDiagnostics bool, cameraProviders ...backend.CameraProvider) (http.Handler, error) {
 	if managed {
 		state, err := openManagedStore(dataDir)
 		if err != nil {
@@ -153,7 +158,7 @@ func newHandler(cfg config.Config, token string, managed bool, dataDir string, p
 		if len(cameraProviders) > 0 {
 			cameras = cameraProviders[0]
 		}
-		return httpapi.NewWithManagedState(cfg, token, ptzClient, cameras, nil, state), nil
+		return httpapi.NewWithManagedStateAndDiagnostics(cfg, token, ptzClient, cameras, nil, state, enableDiagnostics), nil
 	}
 	provider := backend.NewConfigProvider(cfg.Cameras)
 	return httpapi.NewWithProviders(cfg, token, ptzClient, provider, newConfiguredPTZProvider(ptzClient, cfg.Cameras)), nil

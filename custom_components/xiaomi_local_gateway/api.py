@@ -204,6 +204,13 @@ _SUPPORT_FEATURES = {
 _SUPPORT_IMPLEMENTATIONS = {"absent", "research", "implemented"}
 _SUPPORT_VALIDATIONS = {"none", "offline", "device", "home_assistant"}
 _SUPPORT_PATHS = {"camera_lan", "cloud", "nvr_local", "unknown"}
+_SUPPORT_AVAILABILITIES = {"available", "unavailable", "unknown"}
+_SUPPORT_REASONS = {
+    "auth_required", "wrong_region_or_empty_account", "unsupported_model",
+    "unsupported_transport", "unverified_firmware", "channel_unverified",
+    "timeout", "stale", "lan_unreachable", "stream_timeout",
+    "codec_unsupported", "backend_unavailable", "storage_error", "api_incompatible",
+}
 _SUPPORT_CLOUD_OPERATIONS = {
     "account_auth", "inventory", "new_session_negotiation", "settings_read",
 }
@@ -224,6 +231,8 @@ def _parse_camera_support(value: object) -> dict | None:
         implementation = detail.get("implementation")
         validation = detail.get("validation")
         path = detail.get("path")
+        availability = detail.get("availability", "unknown")
+        reason = detail.get("reason", "")
         requires_cloud = detail.get("requires_cloud", [])
         evidence_ref = detail.get("evidence_ref", "")
         tested_firmware = detail.get("tested_firmware", "")
@@ -234,6 +243,12 @@ def _parse_camera_support(value: object) -> dict | None:
             or validation not in _SUPPORT_VALIDATIONS
             or not isinstance(path, str)
             or path not in _SUPPORT_PATHS
+            or not isinstance(availability, str)
+            or availability not in _SUPPORT_AVAILABILITIES
+            or not isinstance(reason, str)
+            or (reason and reason not in _SUPPORT_REASONS)
+            or (availability == "available" and reason)
+            or (availability == "unavailable" and not reason)
             or not isinstance(requires_cloud, list)
             or len(requires_cloud) > 8
             or any(not isinstance(item, str) or item not in _SUPPORT_CLOUD_OPERATIONS for item in requires_cloud)
@@ -248,6 +263,8 @@ def _parse_camera_support(value: object) -> dict | None:
             "implementation": implementation,
             "validation": validation,
             "path": path,
+            "availability": availability,
+            **({"reason": reason} if reason else {}),
             "requires_cloud": list(requires_cloud),
             **({"evidence_ref": evidence_ref} if evidence_ref else {}),
             **({"tested_firmware": tested_firmware} if tested_firmware else {}),

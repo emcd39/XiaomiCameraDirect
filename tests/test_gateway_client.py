@@ -107,7 +107,7 @@ class GatewayClientTests(unittest.IsolatedAsyncioTestCase):
                 "features": {
                     "video": {
                         "implementation": "implemented", "validation": "offline",
-                        "path": "camera_lan", "requires_cloud": [],
+                        "path": "camera_lan", "availability": "available", "requires_cloud": [],
                         "evidence_ref": "offline-run#video",
                     },
                     "unknown_future_feature": {"implementation": "implemented"},
@@ -121,7 +121,7 @@ class GatewayClientTests(unittest.IsolatedAsyncioTestCase):
             "features": {
                 "video": {
                     "implementation": "implemented", "validation": "offline",
-                    "path": "camera_lan", "requires_cloud": [], "evidence_ref": "offline-run#video",
+                    "path": "camera_lan", "availability": "available", "requires_cloud": [], "evidence_ref": "offline-run#video",
                 },
             },
         })
@@ -137,6 +137,46 @@ class GatewayClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cameras[0]["id"], "old-camera")
         self.assertIsNone(cameras[0]["rtsp_url"])
         self.assertNotIn("support", cameras[0])
+
+    async def test_mixed_inventory_keeps_cameras_with_unknown_or_invalid_optional_support(self) -> None:
+        self.managed_status = 200
+        self.managed_body = json.dumps({"cameras": [
+            {"id": "valid", "name": "Valid", "capabilities": {"video": True, "ptz": False}, "streams": []},
+            {"id": "future", "name": "Future", "capabilities": {"video": True, "ptz": False}, "streams": [], "support": {"schema_version": 7, "features": {}}},
+            {"id": "partial", "name": "Partial", "capabilities": {"video": True, "ptz": False}, "streams": [], "support": {"schema_version": 1, "features": {"video": {"implementation": "invented"}}}},
+        ]})
+        cameras = await self.client.cameras()
+        self.assertEqual([camera["id"] for camera in cameras], ["valid", "future", "partial"])
+        self.assertTrue(all(camera["rtsp_url"] is None and camera["ptz"] is False for camera in cameras))
+        self.assertTrue(all("support" not in camera for camera in cameras))
+
+    async def test_support_availability_reason_pairing_is_validated(self) -> None:
+        for availability, reason, accepted in (
+            (None, "", True),
+            ("unknown", "unverified_firmware", True),
+            ("available", "", True),
+            ("unavailable", "unsupported_model", True),
+            ("unknown", "future_reason", False),
+            ("available", "timeout", False),
+            ("unavailable", "", False),
+        ):
+            detail = {
+                "implementation": "implemented", "validation": "offline", "path": "camera_lan",
+                "requires_cloud": [],
+            }
+            if availability is not None:
+                detail["availability"] = availability
+            if reason:
+                detail["reason"] = reason
+            self.managed_status = 200
+            self.managed_body = json.dumps({"cameras": [{
+                "id": "cam", "name": "Camera", "capabilities": {"video": True, "ptz": False},
+                "streams": [], "support": {"schema_version": 1, "features": {"video": detail}},
+            }]})
+            cameras = await self.client.cameras()
+            self.assertEqual("support" in cameras[0], accepted, (availability, reason))
+            if accepted:
+                self.assertEqual(cameras[0]["support"]["features"]["video"]["availability"], availability or "unknown")
 
     async def test_managed_stream_credentials_are_rejected(self) -> None:
         self.managed_status = 200

@@ -65,6 +65,8 @@ func TestFeatureSupportEvidenceIsVersionedAndValidated(t *testing.T) {
 					Implementation: "implemented",
 					Validation:     "offline",
 					Path:           "cloud",
+					Availability:   "unknown",
+					Reason:         ErrorUnverifiedFirmware,
 					RequiresCloud:  []string{"settings_read"},
 					EvidenceRef:    "LOCAL-CAMERA-PROGRESS.md#evidence-a00",
 				},
@@ -93,6 +95,16 @@ func TestFeatureSupportEvidenceIsVersionedAndValidated(t *testing.T) {
 		{"unknown path", func(c *Camera) {
 			f := c.Support.Features["camera_settings_read"]
 			f.Path = "cloud_or_local"
+			c.Support.Features["camera_settings_read"] = f
+		}},
+		{"unknown availability", func(c *Camera) {
+			f := c.Support.Features["camera_settings_read"]
+			f.Availability = "verified"
+			c.Support.Features["camera_settings_read"] = f
+		}},
+		{"unknown reason", func(c *Camera) {
+			f := c.Support.Features["camera_settings_read"]
+			f.Reason = "camera_unknown"
 			c.Support.Features["camera_settings_read"] = f
 		}},
 		{"unsafe evidence reference", func(c *Camera) {

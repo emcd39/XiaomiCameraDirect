@@ -35,23 +35,25 @@ type managedStepProvider interface {
 
 // RuntimeInfo contains only public, non-secret managed-runtime metadata.
 type RuntimeInfo struct {
-	InstanceID string   `json:"instance_id"`
-	APIVersion string   `json:"api_version"`
-	Features   []string `json:"features"`
+	InstanceID        string   `json:"instance_id"`
+	APIVersion        string   `json:"api_version"`
+	Features          []string `json:"features"`
+	EnableDiagnostics bool     `json:"-"`
 }
 
 type Handler struct {
-	cfg              config.Config
-	apiToken         string
-	ptz              PTZ
-	cameraProvider   backend.CameraProvider
-	settingsProvider backend.CameraSettingsProvider
-	managedStep      managedStepProvider
-	managedPTZ       backend.PTZProvider
-	snapshotProvider backend.SnapshotProvider
-	runtimeInfo      RuntimeInfo
-	managedState     *store.Store
-	locks            map[string]*sync.Mutex
+	cfg                 config.Config
+	apiToken            string
+	ptz                 PTZ
+	cameraProvider      backend.CameraProvider
+	settingsProvider    backend.CameraSettingsProvider
+	managedStep         managedStepProvider
+	managedPTZ          backend.PTZProvider
+	snapshotProvider    backend.SnapshotProvider
+	diagnosticsProvider backend.CameraDiagnosticsProvider
+	runtimeInfo         RuntimeInfo
+	managedState        *store.Store
+	locks               map[string]*sync.Mutex
 }
 
 type PublicCamera struct {
@@ -84,19 +86,38 @@ func NewWithRuntimeInfo(cfg config.Config, token string, ptz PTZ, cameras backen
 // NewWithManagedState enables the managed info and selection routes using the
 // persisted state store. The static legacy constructors do not register them.
 func NewWithManagedState(cfg config.Config, token string, ptz PTZ, cameras backend.CameraProvider, managedPTZ backend.PTZProvider, state *store.Store) http.Handler {
+	return NewWithManagedStateAndDiagnostics(cfg, token, ptz, cameras, managedPTZ, state, false)
+}
+
+// NewWithManagedStateAndDiagnostics enables the metadata-only session route
+// only when explicitly requested by the operator and the provider supports it.
+func NewWithManagedStateAndDiagnostics(cfg config.Config, token string, ptz PTZ, cameras backend.CameraProvider, managedPTZ backend.PTZProvider, state *store.Store, enableDiagnostics bool) http.Handler {
 	var runtimeInfo RuntimeInfo
 	if state != nil {
 		features := []string{"camera_selection"}
 		if _, supported := cameras.(backend.CameraSettingsProvider); supported {
 			features = append(features, "camera_settings_read")
 		}
+		if _, supported := cameras.(backend.CameraDiagnosticsProvider); supported && enableDiagnostics {
+			features = append(features, "camera_session_diagnostics")
+		}
 		runtimeInfo = RuntimeInfo{
-			InstanceID: state.Snapshot().InstanceID,
-			APIVersion: ManagedAPIVersion,
-			Features:   features,
+			InstanceID:        state.Snapshot().InstanceID,
+			APIVersion:        ManagedAPIVersion,
+			Features:          features,
+			EnableDiagnostics: enableDiagnostics,
 		}
 	}
 	return newWithRuntimeInfo(cfg, token, ptz, cameras, managedPTZ, runtimeInfo, state)
+}
+
+func containsFeature(features []string, feature string) bool {
+	for _, current := range features {
+		if current == feature {
+			return true
+		}
+	}
+	return false
 }
 
 func newWithRuntimeInfo(cfg config.Config, token string, ptz PTZ, cameras backend.CameraProvider, managedPTZ backend.PTZProvider, runtimeInfo RuntimeInfo, state *store.Store) http.Handler {
@@ -107,18 +128,24 @@ func newWithRuntimeInfo(cfg config.Config, token string, ptz PTZ, cameras backen
 	}
 	stepProvider, _ := cameras.(managedStepProvider)
 	settingsProvider, _ := cameras.(backend.CameraSettingsProvider)
+	diagnosticsProvider, _ := cameras.(backend.CameraDiagnosticsProvider)
+	runtimeInfo.EnableDiagnostics = runtimeInfo.EnableDiagnostics && diagnosticsProvider != nil
+	if runtimeInfo.EnableDiagnostics && !containsFeature(runtimeInfo.Features, "camera_session_diagnostics") {
+		runtimeInfo.Features = append(runtimeInfo.Features, "camera_session_diagnostics")
+	}
 	h := &Handler{
-		cfg:              cfg,
-		apiToken:         token,
-		ptz:              ptz,
-		cameraProvider:   cameras,
-		settingsProvider: settingsProvider,
-		managedStep:      stepProvider,
-		managedPTZ:       managedPTZ,
-		snapshotProvider: snapshotProvider(cameras),
-		runtimeInfo:      runtimeInfo,
-		managedState:     state,
-		locks:            map[string]*sync.Mutex{},
+		cfg:                 cfg,
+		apiToken:            token,
+		ptz:                 ptz,
+		cameraProvider:      cameras,
+		settingsProvider:    settingsProvider,
+		managedStep:         stepProvider,
+		managedPTZ:          managedPTZ,
+		snapshotProvider:    snapshotProvider(cameras),
+		diagnosticsProvider: diagnosticsProvider,
+		runtimeInfo:         runtimeInfo,
+		managedState:        state,
+		locks:               map[string]*sync.Mutex{},
 	}
 	for _, camera := range cfg.Cameras {
 		h.locks[camera.ID] = &sync.Mutex{}
@@ -134,6 +161,9 @@ func newWithRuntimeInfo(cfg config.Config, token string, ptz PTZ, cameras backen
 	mux.HandleFunc("GET /v2/cameras", h.managedList)
 	mux.HandleFunc("GET /v2/cameras/{id}/settings", h.managedSettings)
 	mux.HandleFunc("GET /v2/cameras/{id}/snapshot", h.managedSnapshot)
+	if runtimeInfo.EnableDiagnostics {
+		mux.HandleFunc("GET /v2/cameras/{id}/diagnostics", h.managedCameraDiagnostics)
+	}
 	mux.HandleFunc("POST /v2/cameras/{id}/ptz/step", h.managedStepOnce)
 	if state != nil {
 		mux.HandleFunc("PUT /v2/selection", h.replaceSelection)
@@ -205,6 +235,63 @@ func (h *Handler) managedSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond(w, http.StatusOK, settings)
+}
+
+func (h *Handler) managedCameraDiagnostics(w http.ResponseWriter, r *http.Request) {
+	if h.diagnosticsProvider == nil {
+		respond(w, http.StatusServiceUnavailable, map[string]string{"error": string(model.ErrorBackendUnavailable)})
+		return
+	}
+	id := r.PathValue("id")
+	if !validXiaomiCameraID(id) {
+		respond(w, http.StatusBadRequest, map[string]string{"error": "invalid_camera_id"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	diagnostics, err := h.diagnosticsProvider.CameraDiagnostics(ctx, model.CameraID(id))
+	if err != nil {
+		switch {
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			respond(w, http.StatusRequestTimeout, map[string]string{"error": string(model.ErrorTimeout)})
+		case errors.Is(err, xiaomi.ErrCameraNotFound):
+			respond(w, http.StatusNotFound, map[string]string{"error": "camera_not_found"})
+		default:
+			respond(w, http.StatusServiceUnavailable, map[string]string{"error": string(model.ErrorBackendUnavailable)})
+		}
+		return
+	}
+	respond(w, http.StatusOK, sanitizeSessionDiagnostics(diagnostics))
+}
+
+func sanitizeSessionDiagnostics(value backend.CameraSessionDiagnostics) backend.CameraSessionDiagnostics {
+	switch value.State {
+	case backend.SessionIdle, backend.SessionStarting, backend.SessionStreaming,
+		backend.SessionEnding, backend.SessionUnavailable, backend.SessionUnsupported:
+	default:
+		value.State = "unknown"
+	}
+	switch value.Protocol {
+	case "", "cs2+tcp", "cs2+udp":
+	default:
+		value.Protocol = "unknown"
+	}
+	switch value.PeerClass {
+	case "", "loopback_ip", "private_ip", "public_ip", "hostname_unverified", "unknown":
+	default:
+		value.PeerClass = "unknown"
+	}
+	switch value.Reason {
+	case "", model.ErrorAuthRequired, model.ErrorWrongRegionOrEmptyAccount,
+		model.ErrorUnsupportedModel, model.ErrorUnsupportedTransport,
+		model.ErrorUnverifiedFirmware, model.ErrorChannelUnverified,
+		model.ErrorTimeout, model.ErrorStale, model.ErrorLANUnreachable,
+		model.ErrorStreamTimeout, model.ErrorCodecUnsupported,
+		model.ErrorBackendUnavailable, model.ErrorStorage, model.ErrorAPIIncompatible:
+	default:
+		value.Reason = model.ErrorBackendUnavailable
+	}
+	return value
 }
 
 type managedStepRequest struct {
@@ -431,7 +518,12 @@ func (h *Handler) managedList(w http.ResponseWriter, r *http.Request) {
 		if h.settingsProvider == nil {
 			removeFeatureEvidence(&cameras[i], "camera_settings_read")
 		}
-		if err := cameras[i].Validate(); err != nil {
+		// Support metadata is optional. Keep the camera and its stable core
+		// capabilities if a provider sends an unknown or malformed support schema.
+		if err := cameras[i].ValidateSupport(); err != nil {
+			cameras[i].Support = nil
+		}
+		if err := cameras[i].ValidateCore(); err != nil {
 			respond(w, http.StatusBadGateway, map[string]string{"error": "invalid_backend_response"})
 			return
 		}

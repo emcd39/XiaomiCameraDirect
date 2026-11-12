@@ -6,7 +6,7 @@ This is the provider-independent T02 contract in [the delivery plan](SIMPLE-STAB
 
 Managed startup is an explicit `-managed` command-line mode. It starts with an empty camera list, uses `-listen` (default `127.0.0.1:8099`), and opens `/data/managed-state.json` by default; mount `/data` persistently. It bypasses the static camera config. Legacy startup remains the default and continues to require a valid config with at least one camera. Both modes currently require `XLG_API_TOKEN`; automated HA pairing is not implemented.
 
-In managed mode, authorized `GET /v2/info` returns the persisted identity, the current managed API version, and only implemented features. The current feature list advertises persisted camera selection:
+In managed mode, authorized `GET /v2/info` returns the persisted identity, the current managed API version, and gateway features that are actually available in this runtime. The base managed feature is persisted camera selection; an installed provider may advertise its read-only settings capability, and metadata-only session diagnostics are advertised only when explicitly enabled:
 
 ```http
 GET /v2/info HTTP/1.1
@@ -14,7 +14,7 @@ Authorization: Bearer <gateway-token>
 ```
 
 ```json
-{"instance_id":"inst_<32-hex-digits>","api_version":"2.0","features":["camera_selection"]}
+{"instance_id":"inst_<32-hex-digits>","api_version":"2.0","features":["camera_selection","camera_settings_read"]}
 ```
 
 The instance ID survives a gateway restart because it is loaded from the managed data file. Missing/invalid API authorization returns `401`; invalid or insecure state prevents startup and is not silently replaced.
@@ -46,7 +46,7 @@ The initial Go model is `model.Camera` in `internal/model/camera.go`. Its `video
 
 ## Inventory route status
 
-- `GET /v2/info` **implemented in explicit managed mode:** returns persisted `instance_id`, `api_version` (`2.0`), and `features: ["camera_selection"]`. It requires bearer authorization. Legacy mode does not register this route and returns `404`.
+- `GET /v2/info` **implemented in explicit managed mode:** returns persisted `instance_id`, `api_version` (`2.0`), and the runtime's supported features. It requires bearer authorization. Legacy mode does not register this route and returns `404`.
 - `GET /v2/devices`: devices visible to the authenticated Xiaomi account; an empty list is valid. Unsupported devices remain visible with a reason.
 - `GET /v2/cameras` **implemented:** returns `{"cameras": [...]}` with selected cameras and their stable IDs, capabilities, video state, control state, and sanitized reasons. When the provider implements `StreamProvider`, a camera may contain a `streams` list with credential-free RTSP endpoints. In managed mode with an empty saved selection and no Xiaomi provider, it returns `{"cameras":[]}`. If cameras are selected but no provider is installed, it returns `503 backend_unavailable` rather than inventing entities.
 - `PUT /v2/selection` **implemented in managed mode:** replaces selected IDs with `{"revision":<current>,"camera_ids":[...]}`. A successful change increments and persists the revision; sending the same set with the current revision is idempotent. A stale revision returns `409` with the current revision and IDs. The route requires bearer authorization and is not registered in legacy mode.
@@ -91,6 +91,8 @@ Authorization: Bearer <gateway-token>
         "implementation": "implemented",
         "validation": "device",
         "path": "camera_lan",
+        "availability": "unknown",
+        "reason": "unverified_firmware",
         "requires_cloud": ["account_auth", "inventory", "new_session_negotiation"],
         "evidence_ref": "TEST_REPORT.md#latest-c201-l2-decode-7-nov-2026",
         "tested_firmware": "5.3.2_0016"
@@ -99,6 +101,8 @@ Authorization: Bearer <gateway-token>
         "implementation": "implemented",
         "validation": "offline",
         "path": "cloud",
+        "availability": "unknown",
+        "reason": "unverified_firmware",
         "requires_cloud": ["account_auth", "inventory", "settings_read"],
         "evidence_ref": ".test-env/evidence/test-local-20261112-162635-f49fca83.log#late-settings"
       }
@@ -107,9 +111,15 @@ Authorization: Bearer <gateway-token>
 }
 ```
 
-Schema 1 uses `implementation` values `absent`, `research`, or `implemented`; `validation` values `none`, `offline`, `device`, or `home_assistant`; and `path` values `camera_lan`, `cloud`, `nvr_local`, or `unknown`. `path` names the route declared by the implementation/code review; it is **not** proof from packet capture that all traffic followed that path or that the feature works without internet. `validation` states the evidence level, and `evidence_ref` points to the report or test log. `tested_firmware` is included only when the evidence identifies a firmware version. The `requires_cloud` list names operations such as `account_auth`, `inventory`, `new_session_negotiation`, and `settings_read`; a direct camera stream still depends on cloud authentication, inventory, and session setup, while settings reads use the cloud directly. A mock or offline test never becomes `device` evidence by itself.
+Schema 1 uses `implementation` values `absent`, `research`, or `implemented`; `validation` values `none`, `offline`, `device`, or `home_assistant`; `path` values `camera_lan`, `cloud`, `nvr_local`, or `unknown`; and `availability` values `available`, `unavailable`, or `unknown`. `reason` is an optional stable error code; `unverified_firmware`, `unsupported_transport`, `channel_unverified`, `auth_required`, `timeout`, `stale`, and the existing model/API errors are valid. An old schema-v1 record without `availability` is interpreted as `unknown` without inventing a reason. `available` cannot include an error reason; `unavailable` requires one. `path` names the route declared by the implementation/code review; it is **not** proof from packet capture that all traffic followed that path or that the feature works without internet. `validation` states the evidence level, and `evidence_ref` points to the report or test log. `tested_firmware` is included only when the evidence identifies a firmware version. The `requires_cloud` list names operations such as `account_auth`, `inventory`, `new_session_negotiation`, and `settings_read`; a direct camera stream still depends on cloud authentication, inventory, and session setup, while settings reads use the cloud directly. A mock or offline test never becomes `device` evidence by itself.
 
-The Xiaomi provider adds this metadata only to the exact C201 model profile. The API removes PTZ/preset evidence if no PTZ provider is installed, and removes settings-read evidence if no settings provider is installed. The HA client ignores unknown schema versions, unknown feature names, and malformed optional feature records while keeping the camera's existing state/capabilities. HA exposes accepted support data as the camera entity's `support` state attribute; it does not create entities for unimplemented functions.
+The Xiaomi provider adds detailed C201 metadata for the exact C201 profile and marks other models unavailable with `unsupported_model`; it never calls an untested model device-verified. The API removes PTZ/preset evidence if no PTZ provider is installed, and removes settings-read evidence if no settings provider is installed. Invalid optional support on one camera is dropped without rejecting that camera or changing its core capabilities. The HA client ignores unknown schema versions, unknown feature names, and malformed optional feature records while keeping the camera's existing state/capabilities. HA exposes accepted support data as the camera entity's `support` state attribute, including a readable `reason_text`; it does not create entities for unimplemented functions.
+
+### Opt-in existing-session diagnostics
+
+The Xiaomi gateway can expose `GET /v2/cameras/{id}/diagnostics` only when started with `-enable-diagnostics`. The route also requires an installed provider implementing `CameraDiagnosticsProvider`; when active, `/v2/info` advertises `camera_session_diagnostics`. It is disabled by default. Requests require bearer authorization and have a 2-second server deadline. The endpoint snapshots metadata from the already-owned session only: state, protocol, peer address class, and bounded counters. It never starts/restarts a camera session, reads media frames, or sends a camera control. Cancellation/timeout returns `408 timeout`; a disabled route or unknown camera returns `404`; provider failure returns `503 backend_unavailable`.
+
+`peer_class` is computed from the remote address of the already-open media transport and the raw address is discarded. `private_ip` is evidence about that observed peer for that session, not proof that every camera operation or account/setup request stays on the LAN. A current live C201 report is still required before claiming current end-to-end locality.
 
 Current HTTP errors are small and do not echo upstream details:
 

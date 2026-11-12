@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/backend"
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/model"
 )
 
@@ -38,11 +39,12 @@ var (
 )
 
 type Options struct {
-	GatewayURL       string
-	Token            string
-	IncludeInventory bool
-	CameraID         string
-	DryRun           bool
+	GatewayURL                string
+	Token                     string
+	IncludeInventory          bool
+	CameraID                  string
+	IncludeSessionDiagnostics bool
+	DryRun                    bool
 }
 
 type Report struct {
@@ -63,17 +65,19 @@ type APIReport struct {
 }
 
 type CameraReport struct {
-	Reference     string               `json:"camera_ref"`
-	Model         string               `json:"model,omitempty"`
-	Firmware      string               `json:"firmware,omitempty"`
-	Selected      bool                 `json:"selected"`
-	Capabilities  model.Capabilities   `json:"capabilities"`
-	VideoState    string               `json:"video_state"`
-	VideoReason   string               `json:"video_reason,omitempty"`
-	ControlState  string               `json:"control_state"`
-	ControlReason string               `json:"control_reason,omitempty"`
-	Support       *model.CameraSupport `json:"support,omitempty"`
-	Streams       []StreamReport       `json:"streams,omitempty"`
+	Reference               string                            `json:"camera_ref"`
+	Model                   string                            `json:"model,omitempty"`
+	Firmware                string                            `json:"firmware,omitempty"`
+	Selected                bool                              `json:"selected"`
+	Capabilities            model.Capabilities                `json:"capabilities"`
+	VideoState              string                            `json:"video_state"`
+	VideoReason             string                            `json:"video_reason,omitempty"`
+	ControlState            string                            `json:"control_state"`
+	ControlReason           string                            `json:"control_reason,omitempty"`
+	Support                 *model.CameraSupport              `json:"support,omitempty"`
+	Streams                 []StreamReport                    `json:"streams,omitempty"`
+	SessionDiagnosticsState string                            `json:"session_diagnostics_state,omitempty"`
+	Session                 *backend.CameraSessionDiagnostics `json:"session,omitempty"`
 }
 
 type StreamReport struct {
@@ -87,9 +91,23 @@ type Runner struct {
 }
 
 func NewRunner() *Runner {
+	return newRunnerWithDialContext(nil)
+}
+
+func newRunnerWithDialContext(dialContext func(context.Context, string, string) (net.Conn, error)) *Runner {
+	transport := &http.Transport{
+		Proxy:                 nil,
+		DialContext:           dialContext,
+		TLSHandshakeTimeout:   5 * time.Second,
+		IdleConnTimeout:       30 * time.Second,
+		MaxIdleConns:          10,
+		MaxConnsPerHost:       2,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
 	return &Runner{
 		client: &http.Client{
-			Timeout: defaultTimeout,
+			Timeout:   defaultTimeout,
+			Transport: transport,
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
@@ -122,6 +140,9 @@ func (r *Runner) Collect(ctx context.Context, options Options) (Report, error) {
 	}
 	if options.IncludeInventory {
 		report.Operations = append(report.Operations, "GET /v2/cameras")
+	}
+	if options.IncludeSessionDiagnostics {
+		report.Operations = append(report.Operations, "GET /v2/cameras/{camera-id}/diagnostics")
 	}
 	if options.DryRun {
 		report.Mode = "dry_run"
@@ -185,7 +206,27 @@ func (r *Runner) Collect(ctx context.Context, options Options) (Report, error) {
 				continue
 			}
 			found = true
-			report.Cameras = append(report.Cameras, summarizeCamera(camera))
+			cameraReport := summarizeCamera(camera)
+			if options.IncludeSessionDiagnostics {
+				endpoint := baseURL + "/v2/cameras/" + url.PathEscape(string(camera.ID)) + "/diagnostics"
+				body, diagStatus, diagErr := r.get(requestCtx, endpoint, options.Token)
+				if diagErr != nil {
+					return Report{}, diagErr
+				}
+				if diagStatus == http.StatusNotFound {
+					cameraReport.SessionDiagnosticsState = "disabled"
+				} else if diagStatus == http.StatusOK {
+					var session backend.CameraSessionDiagnostics
+					if decodeBounded(body, &session) != nil {
+						return Report{}, ErrInvalidResponse
+					}
+					cameraReport.SessionDiagnosticsState = "available"
+					cameraReport.Session = sanitizeSessionDiagnostics(session)
+				} else {
+					return Report{}, ErrUnavailable
+				}
+			}
+			report.Cameras = append(report.Cameras, cameraReport)
 		}
 		if !found {
 			return Report{}, ErrCameraNotFound
@@ -195,7 +236,9 @@ func (r *Runner) Collect(ctx context.Context, options Options) (Report, error) {
 }
 
 func validateOptions(options Options) (string, string, error) {
-	if (!options.DryRun && strings.TrimSpace(options.Token) == "") || (options.CameraID != "" && !options.IncludeInventory) {
+	if (!options.DryRun && strings.TrimSpace(options.Token) == "") ||
+		(options.CameraID != "" && !options.IncludeInventory) ||
+		(options.IncludeSessionDiagnostics && (!options.IncludeInventory || !validDiagnosticCameraID(options.CameraID))) {
 		return "", "", ErrInvalidOptions
 	}
 	if len(options.Token) > 512 || strings.ContainsAny(options.Token, "\r\n\x00") {
@@ -212,6 +255,48 @@ func validateOptions(options Options) (string, string, error) {
 	u.Path = ""
 	u.RawPath = ""
 	return strings.TrimRight(u.String(), "/"), targetClass, nil
+}
+
+func validDiagnosticCameraID(value string) bool {
+	if len(value) != len("xiaomi_")+16 || !strings.HasPrefix(value, "xiaomi_") {
+		return false
+	}
+	for _, char := range value[len("xiaomi_"):] {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func sanitizeSessionDiagnostics(value backend.CameraSessionDiagnostics) *backend.CameraSessionDiagnostics {
+	switch value.State {
+	case backend.SessionIdle, backend.SessionStarting, backend.SessionStreaming,
+		backend.SessionEnding, backend.SessionUnavailable, backend.SessionUnsupported:
+	default:
+		value.State = "unknown"
+	}
+	switch value.Protocol {
+	case "", "cs2+tcp", "cs2+udp":
+	default:
+		value.Protocol = "unknown"
+	}
+	switch value.PeerClass {
+	case "", "loopback_ip", "private_ip", "public_ip", "hostname_unverified", "unknown":
+	default:
+		value.PeerClass = "unknown"
+	}
+	switch value.Reason {
+	case "", model.ErrorAuthRequired, model.ErrorWrongRegionOrEmptyAccount,
+		model.ErrorUnsupportedModel, model.ErrorUnsupportedTransport,
+		model.ErrorUnverifiedFirmware, model.ErrorChannelUnverified,
+		model.ErrorTimeout, model.ErrorStale, model.ErrorLANUnreachable,
+		model.ErrorStreamTimeout, model.ErrorCodecUnsupported,
+		model.ErrorBackendUnavailable, model.ErrorStorage, model.ErrorAPIIncompatible:
+	default:
+		value.Reason = model.ErrorBackendUnavailable
+	}
+	return &value
 }
 
 func classifyTarget(host string) string {

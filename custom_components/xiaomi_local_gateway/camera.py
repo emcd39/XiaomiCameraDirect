@@ -5,6 +5,23 @@ from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.core import callback
 from .entity import GatewayEntity
 
+_SUPPORT_REASON_TEXT = {
+    "auth_required": "Camera authorization is required.",
+    "wrong_region_or_empty_account": "The Xiaomi account region or inventory is unavailable.",
+    "unsupported_model": "This camera model is not supported by the current provider.",
+    "unsupported_transport": "This camera transport is not supported.",
+    "unverified_firmware": "Current camera firmware has not been verified for this feature.",
+    "channel_unverified": "The required camera channel has not been verified.",
+    "timeout": "The camera did not respond before the timeout.",
+    "stale": "This diagnostic result is stale.",
+    "lan_unreachable": "The camera is not reachable on the local network.",
+    "stream_timeout": "The camera stream timed out.",
+    "codec_unsupported": "The camera video codec is not supported.",
+    "backend_unavailable": "The gateway camera provider is unavailable.",
+    "storage_error": "Camera storage could not be read.",
+    "api_incompatible": "The gateway API version is not compatible.",
+}
+
 async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = entry.runtime_data
     seen = set()
@@ -47,7 +64,20 @@ class GatewayCamera(GatewayEntity, Camera):
             attributes["model_id"] = model_id
         support = camera.get("support")
         if isinstance(support, dict):
-            attributes["support"] = support
+            displayed_support = {
+                "schema_version": support.get("schema_version"),
+                "features": {},
+            }
+            for name, feature in support.get("features", {}).items():
+                if not isinstance(feature, dict):
+                    continue
+                detail = dict(feature)
+                reason = detail.get("reason")
+                if isinstance(reason, str) and reason in _SUPPORT_REASON_TEXT:
+                    detail["reason_text"] = _SUPPORT_REASON_TEXT[reason]
+                displayed_support["features"][name] = detail
+            if displayed_support["features"]:
+                attributes["support"] = displayed_support
         return attributes
 
     async def async_camera_image(self, width=None, height=None) -> bytes | None:
