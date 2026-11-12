@@ -118,9 +118,9 @@ func (r *Registry) Resolve(modelID, firmware, region string) (Match, error) {
 
 	var regional, wildcard []Profile
 	for _, profile := range candidates {
-		if region != "" && slices.Contains(profile.Regions, region) {
+		if region != "" && region != "*" && slices.Contains(profile.Regions, region) {
 			regional = append(regional, profile)
-		} else if region != "" && slices.Contains(profile.Regions, "*") {
+		} else if slices.Contains(profile.Regions, "*") {
 			wildcard = append(wildcard, profile)
 		}
 	}
@@ -134,7 +134,7 @@ func (r *Registry) Resolve(modelID, firmware, region string) (Match, error) {
 			switch {
 			case region == "":
 				unspecifiedRegionFirmware = append(unspecifiedRegionFirmware, profile)
-			case slices.Contains(profile.Regions, region):
+			case region != "*" && slices.Contains(profile.Regions, region):
 				regionalFirmware = append(regionalFirmware, profile)
 			case slices.Contains(profile.Regions, "*"):
 				wildcardFirmware = append(wildcardFirmware, profile)

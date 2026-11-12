@@ -90,12 +90,14 @@ func TestWildcardRegionDoesNotCountAsVerifiedRegion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	match, err := registry.Resolve(ModelC201, "5.3.2_0016", "us")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if match.RegionKnown || match.Supports("region_gated_feature") {
-		t.Fatalf("wildcard region improperly verified region-specific feature: %#v", match)
+	for _, region := range []string{"us", "*"} {
+		match, err := registry.Resolve(ModelC201, "5.3.2_0016", region)
+		if err != nil {
+			t.Fatalf("Resolve(region %q): %v", region, err)
+		}
+		if !match.FirmwareKnown || match.RegionKnown || match.Supports("region_gated_feature") {
+			t.Fatalf("wildcard region %q improperly verified a region-specific feature: %#v", region, match)
+		}
 	}
 }
 
