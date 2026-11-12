@@ -21,11 +21,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/backend"
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/model"
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/streamrtsp"
+	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/xiaomi/localmedia"
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/xiaomi/profiles"
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/xiaomi/protocol/cloud"
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/xiaomi/protocol/stream"
@@ -63,20 +65,24 @@ type Config struct {
 	RTSPPort                 int
 	FFmpegPath               string
 	TestExperimentalProfiles bool
+	LocalMediaRequired       bool
+	LocalMediaNetworks       string
 }
 
 // ConfigFromEnv reads the private pilot/runtime settings. Empty settings mean
 // that the optional Xiaomi provider is not configured.
 func ConfigFromEnv() (Config, bool, error) {
 	cfg := Config{
-		UserID:        strings.TrimSpace(os.Getenv("XLG_XIAOMI_USER_ID")),
-		Region:        strings.TrimSpace(os.Getenv("XLG_XIAOMI_REGION")),
-		Token:         os.Getenv("XLG_XIAOMI_TOKEN"),
-		AdvertiseHost: strings.TrimSpace(os.Getenv("XLG_RTSP_ADVERTISE_HOST")),
-		RTSPListen:    strings.TrimSpace(os.Getenv("XLG_RTSP_LISTEN")),
-		FFmpegPath:    strings.TrimSpace(os.Getenv("XLG_FFMPEG_PATH")),
+		UserID:             strings.TrimSpace(os.Getenv("XLG_XIAOMI_USER_ID")),
+		Region:             strings.TrimSpace(os.Getenv("XLG_XIAOMI_REGION")),
+		Token:              os.Getenv("XLG_XIAOMI_TOKEN"),
+		AdvertiseHost:      strings.TrimSpace(os.Getenv("XLG_RTSP_ADVERTISE_HOST")),
+		RTSPListen:         strings.TrimSpace(os.Getenv("XLG_RTSP_LISTEN")),
+		FFmpegPath:         strings.TrimSpace(os.Getenv("XLG_FFMPEG_PATH")),
+		LocalMediaNetworks: strings.TrimSpace(os.Getenv("XLG_XIAOMI_LOCAL_MEDIA_NETWORKS")),
 	}
-	configured := cfg.UserID != "" || cfg.Region != "" || cfg.Token != ""
+	localMediaMode := strings.TrimSpace(os.Getenv("XLG_XIAOMI_LOCAL_MEDIA_REQUIRED"))
+	configured := cfg.UserID != "" || cfg.Region != "" || cfg.Token != "" || localMediaMode != "" || cfg.LocalMediaNetworks != ""
 	if !configured {
 		return Config{}, false, nil
 	}
@@ -89,6 +95,18 @@ func ConfigFromEnv() (Config, bool, error) {
 			return Config{}, true, errors.New("invalid Xiaomi profile test mode")
 		}
 		cfg.TestExperimentalProfiles = profileTestMode
+	}
+	if localMediaMode != "" {
+		localMediaRequired, err := strconv.ParseBool(localMediaMode)
+		if err != nil {
+			return Config{}, true, errors.New("invalid local media required setting")
+		}
+		cfg.LocalMediaRequired = localMediaRequired
+	}
+	if cfg.LocalMediaRequired || cfg.LocalMediaNetworks != "" {
+		if _, err := localmedia.ParseAllowedNetworks(cfg.LocalMediaNetworks); err != nil {
+			return Config{}, true, errors.New("invalid local media network allowlist")
+		}
 	}
 	if cfg.RTSPListen == "" {
 		cfg.RTSPListen = defaultRTSPListen
@@ -114,16 +132,22 @@ func ConfigFromEnv() (Config, bool, error) {
 }
 
 type Provider struct {
-	cfg             Config
-	account         *cloud.Account
-	relay           *streamrtsp.Relay
-	profileRegistry *profiles.Registry
+	cfg                Config
+	account            *cloud.Account
+	deviceInventory    deviceInventory
+	missSessionSource  missSessionProvider
+	relay              *streamrtsp.Relay
+	profileRegistry    *profiles.Registry
+	localMediaNetworks []localmedia.AllowedNetwork
+	routeResolver      localmedia.RouteResolver
+	openMediaSession   func(context.Context, localmedia.SessionTarget, stream.Config) (localmedia.Session, error)
 
-	mu      sync.RWMutex
-	sources map[model.CameraID]*cameraSource
-	devices []*cloud.Device
-	loaded  time.Time
-	closed  bool
+	mu                sync.RWMutex
+	sources           map[model.CameraID]*cameraSource
+	devices           []*cloud.Device
+	loaded            time.Time
+	inventoryRevision uint64
+	closed            bool
 
 	closeOnce sync.Once
 }
@@ -135,8 +159,83 @@ type cameraSession interface {
 	DiagnosticMotorStepObserved(string, func()) (bool, string)
 }
 
+type missSessionProvider interface {
+	MissVendor(string) (*cloud.MissSession, error)
+}
+
+type deviceInventory interface {
+	Devices() ([]*cloud.Device, error)
+}
+
 type liveCameraSession struct {
 	session *stream.Session
+}
+
+type providerSessionOpener struct {
+	account missSessionProvider
+	vendor  string
+	config  stream.Config
+	miss    *cloud.MissSession
+	open    func(context.Context, localmedia.SessionTarget, stream.Config) (localmedia.Session, error)
+}
+
+func (o *providerSessionOpener) Prepare(ctx context.Context, did string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if o.account == nil || strings.TrimSpace(did) == "" {
+		return errors.New("camera session material is unavailable")
+	}
+	missSession, err := o.account.MissVendor(did)
+	if err != nil || missSession == nil || missSession.Vendor != o.vendor {
+		return errors.New("camera session negotiation failed")
+	}
+	if _, supported := mediaTransportPreference(missSession.Vendor); !supported {
+		return errors.New("camera session transport is unsupported")
+	}
+	o.miss = missSession
+	return ctx.Err()
+}
+
+func (o *providerSessionOpener) Open(ctx context.Context, target localmedia.SessionTarget) (localmedia.Session, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if o.miss == nil || target.DID == "" || target.IP == nil {
+		return nil, errors.New("camera session material is unavailable")
+	}
+	cfg := o.config
+	cfg.Host = target.IP.String()
+	cfg.Interface = target.Interface
+	cfg.DevicePublic = o.miss.DevicePublic
+	cfg.ClientPublic = o.miss.ClientPublic
+	cfg.ClientPrivate = o.miss.ClientPrivate
+	cfg.Sign = o.miss.Sign
+	if o.open != nil {
+		return o.open(ctx, target, cfg)
+	}
+	session, err := stream.Open(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		session.Close()
+		return nil, err
+	}
+	remoteHost, _, err := net.SplitHostPort(session.RemoteAddr)
+	if err != nil {
+		session.Close()
+		return nil, errors.New("camera session peer is unavailable")
+	}
+	if zone := strings.LastIndexByte(remoteHost, '%'); zone >= 0 {
+		remoteHost = remoteHost[:zone]
+	}
+	remoteIP := net.ParseIP(strings.Trim(remoteHost, "[]"))
+	if remoteIP == nil || !remoteIP.Equal(target.IP) {
+		session.Close()
+		return nil, localmedia.ErrRouteInterfaceMismatch
+	}
+	return session, nil
 }
 
 type cameraSessionDiagnostics interface {
@@ -486,9 +585,10 @@ func (run *cameraSessionRun) isEnding() bool {
 }
 
 type cameraSource struct {
-	provider *Provider
-	device   *cloud.Device
-	id       model.CameraID
+	provider          *Provider
+	device            *cloud.Device
+	id                model.CameraID
+	inventoryRevision atomic.Uint64
 
 	mu sync.Mutex // protects this source's current path, session, and lifecycle flags
 	// lifecycleMu serializes accepted PTZ steps with retirement. When both locks
@@ -502,6 +602,7 @@ type cameraSource struct {
 	path               cameraPath
 	sessionDone        chan struct{}
 	starting           chan struct{}
+	startCancel        context.CancelFunc
 	startErr           error
 	lastErr            error
 	closed             bool
@@ -522,6 +623,14 @@ func New(cfg Config) (*Provider, error) {
 	if cfg.FFmpegPath == "" {
 		cfg.FFmpegPath = defaultFFmpeg
 	}
+	var localMediaNetworks []localmedia.AllowedNetwork
+	if cfg.LocalMediaRequired {
+		parsed, err := localmedia.ParseAllowedNetworks(cfg.LocalMediaNetworks)
+		if err != nil {
+			return nil, errors.New("invalid local media network allowlist")
+		}
+		localMediaNetworks = parsed
+	}
 	relay, err := streamrtsp.New(cfg.RTSPListen)
 	if err != nil {
 		return nil, err
@@ -534,7 +643,10 @@ func New(cfg Config) (*Provider, error) {
 		return nil, ErrCredentialsInvalid
 	}
 	log.Printf("xiaomi_backend event=account_restore result=ok")
-	return &Provider{cfg: cfg, account: account, relay: relay, sources: make(map[model.CameraID]*cameraSource)}, nil
+	return &Provider{
+		cfg: cfg, account: account, deviceInventory: account, missSessionSource: account, relay: relay, sources: make(map[model.CameraID]*cameraSource),
+		localMediaNetworks: localMediaNetworks, routeResolver: localmedia.SystemRouteResolver{},
+	}, nil
 }
 
 func restoreFailureClass(err error) string {
@@ -575,7 +687,7 @@ func (p *Provider) Cameras(ctx context.Context) ([]model.Camera, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	devices, err := p.cameraDevices()
+	devices, refreshed, err := p.cameraDevices()
 	if err != nil {
 		return nil, ErrCameraUnavailable
 	}
@@ -585,6 +697,12 @@ func (p *Provider) Cameras(ctx context.Context) ([]model.Camera, error) {
 	if p.closed {
 		p.mu.Unlock()
 		return nil, ErrCameraUnavailable
+	}
+	revision := p.inventoryRevision
+	if refreshed || revision == 0 {
+		revision++
+		p.inventoryRevision = revision
+		p.loaded = time.Now()
 	}
 	for _, device := range devices {
 		if device == nil || !device.IsCamera() {
@@ -606,9 +724,10 @@ func (p *Provider) Cameras(ctx context.Context) ([]model.Camera, error) {
 			camera.Capabilities.Snapshot = match.Supports(profiles.FeatureSnapshot)
 			camera.Support = profileSupportEvidence(match)
 			source := p.sources[id]
-			if source == nil || source.device.Did != device.Did {
+			if source == nil || !sameCameraSourceIdentity(source.device, device) {
 				source = &cameraSource{provider: p, device: device, id: id}
 			}
+			source.inventoryRevision.Store(revision)
 			camera.Video = source.videoStatus()
 			sources[id] = source
 		} else {
@@ -616,11 +735,35 @@ func (p *Provider) Cameras(ctx context.Context) ([]model.Camera, error) {
 		}
 		cameras = append(cameras, camera)
 	}
+	retired := make([]*cameraSource, 0)
+	for id, previous := range p.sources {
+		if sources[id] != previous {
+			retired = append(retired, previous)
+		}
+	}
 	p.sources = sources
 	p.devices = devices
-	p.loaded = time.Now()
+	if p.loaded.IsZero() {
+		p.loaded = time.Now()
+	}
 	p.mu.Unlock()
+	for _, source := range retired {
+		source.close()
+	}
 	return cameras, nil
+}
+
+func sameCameraSourceIdentity(previous, current *cloud.Device) bool {
+	if previous == nil || current == nil {
+		return false
+	}
+	return previous.Did == current.Did && previous.Model == current.Model && previous.IP == current.IP &&
+		normalizeCameraMAC(previous.MAC) == normalizeCameraMAC(current.MAC)
+}
+
+func normalizeCameraMAC(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.NewReplacer(":", "", "-", "", ".", "").Replace(value)
 }
 
 func c201SupportEvidence() *model.CameraSupport {
@@ -733,21 +876,54 @@ func (p *Provider) profileForDevice(device *cloud.Device) (profiles.Match, bool)
 	return match, true
 }
 
-func (p *Provider) cameraDevices() ([]*cloud.Device, error) {
+func (p *Provider) cameraDevices() ([]*cloud.Device, bool, error) {
 	p.mu.RLock()
-	if time.Since(p.loaded) < 30*time.Second {
+	if !p.loaded.IsZero() && time.Since(p.loaded) < 30*time.Second {
 		devices := append([]*cloud.Device(nil), p.devices...)
 		p.mu.RUnlock()
-		return devices, nil
+		return devices, false, nil
 	}
 	p.mu.RUnlock()
-	devices, err := p.account.Devices()
+	if p.deviceInventory == nil {
+		return nil, false, ErrCameraUnavailable
+	}
+	devices, err := p.deviceInventory.Devices()
 	if err != nil {
 		log.Printf("xiaomi_backend event=inventory result=error")
-		return nil, err
+		return nil, false, err
 	}
 	log.Printf("xiaomi_backend event=inventory result=ok camera_count=%d", len(devices))
-	return devices, nil
+	return devices, true, nil
+}
+
+// CameraInventory exposes only the last successfully loaded account inventory
+// to the local-media policy. It never refreshes Xiaomi cloud data itself.
+func (p *Provider) CameraInventory(ctx context.Context) (localmedia.InventorySnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return localmedia.InventorySnapshot{}, err
+	}
+	p.mu.RLock()
+	if p.closed || p.loaded.IsZero() || p.inventoryRevision == 0 {
+		p.mu.RUnlock()
+		return localmedia.InventorySnapshot{}, localmedia.ErrIdentityUnverified
+	}
+	if time.Since(p.loaded) >= 30*time.Second {
+		p.mu.RUnlock()
+		return localmedia.InventorySnapshot{}, localmedia.ErrInventoryStale
+	}
+	devices := append([]*cloud.Device(nil), p.devices...)
+	revision := p.inventoryRevision
+	p.mu.RUnlock()
+	snapshot := localmedia.InventorySnapshot{Revision: revision}
+	for _, device := range devices {
+		if device == nil || !device.IsCamera() {
+			continue
+		}
+		snapshot.Cameras = append(snapshot.Cameras, localmedia.Camera{
+			DID: device.Did, ModelID: device.Model, Firmware: "", IP: device.IP, MAC: device.MAC,
+		})
+	}
+	return snapshot, nil
 }
 
 var c201ReadOnlyProperties = []struct {
@@ -1051,10 +1227,17 @@ func (s *cameraSource) ensurePath(ctx context.Context) (cameraPath, error) {
 		}
 		wait := make(chan struct{})
 		done := make(chan struct{})
-		s.path, s.sessionDone, s.starting = path, done, wait
+		var startCtx context.Context
+		var cancel context.CancelFunc
+		if s.provider.cfg.LocalMediaRequired {
+			startCtx, cancel = context.WithTimeout(context.Background(), 45*time.Second)
+		} else {
+			startCtx, cancel = context.WithCancel(context.Background())
+		}
+		s.path, s.sessionDone, s.starting, s.startCancel = path, done, wait, cancel
 		s.startErr = nil
 		s.mu.Unlock()
-		go s.start(path, done, wait)
+		go s.start(startCtx, path, done, wait)
 		return path, nil
 	}
 }
@@ -1100,7 +1283,7 @@ func (s *cameraSource) videoStatus() model.VideoStatus {
 	return model.VideoStatus{State: model.VideoIdle}
 }
 
-func (s *cameraSource) start(path cameraPath, done, starting chan struct{}) {
+func (s *cameraSource) start(ctx context.Context, path cameraPath, done, starting chan struct{}) {
 	defer s.finishStart(starting)
 	s.mu.Lock()
 	closed := s.closed
@@ -1118,57 +1301,74 @@ func (s *cameraSource) start(path cameraPath, done, starting chan struct{}) {
 		s.failStart(path, done, ErrUnsupportedCamera)
 		return
 	}
-	missSession, err := s.provider.account.MissVendor(s.device.Did)
-	if err != nil || missSession == nil {
-		log.Printf("xiaomi_backend event=session_negotiate result=error")
-		s.failStart(path, done, errors.New("camera session negotiation failed"))
-		return
-	}
-	if missSession.Vendor != match.Profile.Vendor {
-		log.Printf("xiaomi_backend event=session_negotiate result=error")
-		s.failStart(path, done, errors.New("camera session negotiation failed"))
-		return
-	}
-	transport, supported := mediaTransportPreference(missSession.Vendor)
-	if !supported {
-		log.Printf("xiaomi_backend event=session_negotiate result=error")
-		s.failStart(path, done, errors.New("camera session negotiation failed"))
-		return
-	}
-	transportLabel := transport
-	if transportLabel == "" {
-		transportLabel = "auto"
-	}
-	log.Printf("xiaomi_backend event=session_negotiate result=ok vendor=%s media_transport=%s", missSession.Vendor, transportLabel)
-	generation, err := newSessionGeneration()
-	if err != nil {
-		s.failStart(path, done, errors.New("camera session could not be identified"))
-		return
-	}
 	host := s.device.IP
 	if net.ParseIP(host) == nil {
 		log.Printf("xiaomi_backend event=camera_address result=unavailable")
 		s.failStart(path, done, errors.New("camera local address is unavailable"))
 		return
 	}
-	opened, err := stream.Open(stream.Config{
-		Host:          host,
-		Transport:     transport,
-		Model:         match.Profile.ModelID,
-		Channel:       match.Profile.Channel,
-		Quality:       match.Profile.Quality,
-		Audio:         match.Profile.Audio,
-		DevicePublic:  missSession.DevicePublic,
-		ClientPublic:  missSession.ClientPublic,
-		ClientPrivate: missSession.ClientPrivate,
-		Sign:          missSession.Sign,
-	})
+	opener := &providerSessionOpener{account: s.provider.missSessionSource, vendor: match.Profile.Vendor, open: s.provider.openMediaSession, config: stream.Config{
+		Host:    host,
+		Model:   match.Profile.ModelID,
+		Channel: match.Profile.Channel,
+		Quality: match.Profile.Quality,
+		Audio:   match.Profile.Audio,
+	}}
+	var opened localmedia.Session
+	var err error
+	if s.provider.cfg.LocalMediaRequired {
+		revision := s.inventoryRevision.Load()
+		policy := localmedia.Policy{
+			AllowedNetworks: s.provider.localMediaNetworks,
+			Inventory:       s.provider,
+			Routes:          s.provider.routeResolver,
+			Cloud:           opener,
+			Sessions:        opener,
+		}
+		opened, err = policy.Open(ctx, localmedia.Request{
+			DID: s.device.Did, ExpectedModelID: s.device.Model, ExpectedFirmware: "",
+			ExpectedIP: host, ExpectedMAC: s.device.MAC, InventoryRevision: revision,
+		})
+		if err != nil {
+			log.Printf("xiaomi_backend event=local_media_preflight result=error reason=%s", localMediaFailureClass(err))
+			s.failStart(path, done, errors.New("local media policy rejected the camera session"))
+			return
+		}
+	} else {
+		if err := opener.Prepare(ctx, s.device.Did); err != nil {
+			log.Printf("xiaomi_backend event=session_negotiate result=error")
+			s.failStart(path, done, errors.New("camera session negotiation failed"))
+			return
+		}
+		opened, err = opener.Open(ctx, localmedia.SessionTarget{DID: s.device.Did, IP: net.ParseIP(host)})
+		if err != nil {
+			log.Printf("xiaomi_backend event=session_open result=error reason=%s", sessionFailureClass(err))
+			s.failStart(path, done, errors.New("camera video session could not be opened"))
+			return
+		}
+	}
+	transport, _ := mediaTransportPreference(opener.miss.Vendor)
+	transportLabel := transport
+	if transportLabel == "" {
+		transportLabel = "auto"
+	}
+	log.Printf("xiaomi_backend event=session_negotiate result=ok vendor=%s media_transport=%s", opener.miss.Vendor, transportLabel)
+	generation, err := newSessionGeneration()
 	if err != nil {
-		log.Printf("xiaomi_backend event=session_open result=error reason=%s", sessionFailureClass(err))
+		opened.Close()
+		s.failStart(path, done, errors.New("camera session could not be identified"))
+		return
+	}
+	var session cameraSession
+	if streamSession, ok := opened.(*stream.Session); ok {
+		session = &liveCameraSession{session: streamSession}
+	} else if existing, ok := opened.(cameraSession); ok {
+		session = existing
+	} else {
+		opened.Close()
 		s.failStart(path, done, errors.New("camera video session could not be opened"))
 		return
 	}
-	session := &liveCameraSession{session: opened}
 	log.Printf("xiaomi_backend event=session_open result=ok transport=%s", session.Protocol())
 	s.mu.Lock()
 	if s.closed || s.path != path {
@@ -1266,6 +1466,35 @@ func sessionFailureClass(err error) string {
 	}
 }
 
+func localMediaFailureClass(err error) string {
+	switch {
+	case errors.Is(err, localmedia.ErrInvalidPolicy):
+		return "policy_invalid"
+	case errors.Is(err, localmedia.ErrIdentityUnverified):
+		return "identity_unverified"
+	case errors.Is(err, localmedia.ErrInventoryStale):
+		return "inventory_stale"
+	case errors.Is(err, localmedia.ErrTargetInvalid):
+		return "target_invalid"
+	case errors.Is(err, localmedia.ErrTargetOutsideNetwork):
+		return "target_outside_allowed_network"
+	case errors.Is(err, localmedia.ErrRouteInterfaceMismatch):
+		return "route_interface_mismatch"
+	case errors.Is(err, localmedia.ErrLocalInterfaceUnverified):
+		return "local_interface_unverified"
+	case errors.Is(err, localmedia.ErrCloudMaterialUnavailable):
+		return "cloud_material_unavailable"
+	case errors.Is(err, localmedia.ErrSessionOpen):
+		return "session_open"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	default:
+		return "policy_rejected"
+	}
+}
+
 func isTimeout(err error) bool {
 	var networkErr net.Error
 	return errors.As(err, &networkErr) && networkErr.Timeout()
@@ -1275,21 +1504,61 @@ func (s *cameraSource) finishStart(starting chan struct{}) {
 	s.mu.Lock()
 	if s.starting == starting {
 		s.starting = nil
+		cancel := s.startCancel
+		s.startCancel = nil
+		s.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		close(starting)
+		return
 	}
 	s.mu.Unlock()
 	close(starting)
 }
 
 func (s *cameraSource) failStart(path cameraPath, done chan struct{}, err error) {
-	path.Close()
-	close(done)
 	s.mu.Lock()
-	if s.path == path {
+	owned := s.path == path
+	if owned {
 		s.session, s.path, s.sessionDone = nil, nil, nil
 		s.lastErr = err
 	}
 	s.startErr = err
 	s.mu.Unlock()
+	if owned {
+		path.Close()
+	}
+	close(done)
+}
+
+func (s *cameraSource) close() {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.closed = true
+	startCancel := s.startCancel
+	run := s.session
+	s.markSessionEndingLocked(run)
+	s.mu.Unlock()
+	if startCancel != nil {
+		startCancel()
+	}
+	if run != nil {
+		s.retireSession(run, ErrCameraUnavailable)
+	}
+	s.lifecycleMu.Lock()
+	s.mu.Lock()
+	path := s.path
+	s.path = nil
+	s.sessionDone = nil
+	s.mu.Unlock()
+	if path != nil {
+		path.Close()
+	}
+	s.lifecycleMu.Unlock()
 }
 
 func (s *cameraSource) readFrames(run *cameraSessionRun, done chan struct{}) {
@@ -1394,24 +1663,7 @@ func (p *Provider) Close() {
 		}
 		p.mu.Unlock()
 		for _, source := range sources {
-			source.mu.Lock()
-			source.closed = true
-			run := source.session
-			source.markSessionEndingLocked(run)
-			source.mu.Unlock()
-			if run != nil {
-				source.retireSession(run, ErrCameraUnavailable)
-			}
-			source.lifecycleMu.Lock()
-			source.mu.Lock()
-			path := source.path
-			source.path = nil
-			source.sessionDone = nil
-			source.mu.Unlock()
-			if path != nil {
-				path.Close()
-			}
-			source.lifecycleMu.Unlock()
+			source.close()
 		}
 		if p.relay != nil {
 			p.relay.Close()

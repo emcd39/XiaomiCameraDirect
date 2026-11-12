@@ -15,6 +15,7 @@ import (
 
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/backend"
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/model"
+	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/xiaomi/localmedia"
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/xiaomi/profiles"
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/xiaomi/protocol/cloud"
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/xiaomi/protocol/stream"
@@ -24,12 +25,35 @@ func TestConfigFromEnvLeavesProviderDisabledWithoutCredentials(t *testing.T) {
 	for _, key := range []string{
 		"XLG_XIAOMI_USER_ID", "XLG_XIAOMI_REGION", "XLG_XIAOMI_TOKEN",
 		"XLG_RTSP_ADVERTISE_HOST", "XLG_RTSP_LISTEN", "XLG_FFMPEG_PATH", "XLG_XIAOMI_PROFILE_TEST_MODE",
+		"XLG_XIAOMI_LOCAL_MEDIA_REQUIRED", "XLG_XIAOMI_LOCAL_MEDIA_NETWORKS",
 	} {
 		t.Setenv(key, "")
 	}
 	cfg, configured, err := ConfigFromEnv()
 	if err != nil || configured || cfg != (Config{}) {
 		t.Fatalf("ConfigFromEnv() = %#v, %t, %v; want zero config, disabled, nil", cfg, configured, err)
+	}
+}
+
+func TestConfigFromEnvRequiresExplicitLocalMediaNetwork(t *testing.T) {
+	for key, value := range map[string]string{
+		"XLG_XIAOMI_USER_ID": "test-user", "XLG_XIAOMI_REGION": "de", "XLG_XIAOMI_TOKEN": "test-token",
+		"XLG_RTSP_ADVERTISE_HOST": "127.0.0.1", "XLG_XIAOMI_LOCAL_MEDIA_REQUIRED": "true",
+	} {
+		t.Setenv(key, value)
+	}
+	t.Setenv("XLG_XIAOMI_LOCAL_MEDIA_NETWORKS", "")
+	if _, configured, err := ConfigFromEnv(); !configured || err == nil {
+		t.Fatalf("missing local network allowlist: configured=%t err=%v, want a fail-closed configuration error", configured, err)
+	}
+	t.Setenv("XLG_XIAOMI_LOCAL_MEDIA_NETWORKS", "192.168.2.0/24@Ethernet")
+	cfg, configured, err := ConfigFromEnv()
+	if err != nil || !configured || !cfg.LocalMediaRequired || cfg.LocalMediaNetworks != "192.168.2.0/24@Ethernet" {
+		t.Fatalf("valid local media config = %#v, configured=%t, err=%v", cfg, configured, err)
+	}
+	t.Setenv("XLG_XIAOMI_LOCAL_MEDIA_REQUIRED", "sometimes")
+	if _, _, err := ConfigFromEnv(); err == nil {
+		t.Fatal("invalid local_media_required value was accepted")
 	}
 }
 
@@ -85,6 +109,72 @@ func TestMediaTransportPreferenceMapsCS2VendorToNegotiation(t *testing.T) {
 	}
 	if _, ok := mediaTransportPreference("unknown"); ok {
 		t.Fatal("unknown MISS vendor was accepted")
+	}
+}
+
+func TestSameCameraSourceIdentityIncludesCurrentEndpoint(t *testing.T) {
+	base := &cloud.Device{Did: "same-did", Model: supportedModel, IP: "192.168.2.84", MAC: "94:F8:27:00:00:01"}
+	same := *base
+	changedIP := *base
+	changedIP.IP = "192.168.2.85"
+	changedMAC := *base
+	changedMAC.MAC = "94:F8:27:00:00:02"
+	if !sameCameraSourceIdentity(base, &same) {
+		t.Fatal("identical camera endpoint did not retain its source")
+	}
+	if sameCameraSourceIdentity(base, &changedIP) || sameCameraSourceIdentity(base, &changedMAC) {
+		t.Fatal("same DID with changed endpoint identity retained its old source")
+	}
+}
+
+type fakeDeviceInventory struct {
+	devices []*cloud.Device
+}
+
+func (f *fakeDeviceInventory) Devices() ([]*cloud.Device, error) {
+	return append([]*cloud.Device(nil), f.devices...), nil
+}
+
+func TestProviderReplacesSourceWhenSameDIDGetsNewIP(t *testing.T) {
+	previousDevice := &cloud.Device{Did: "same-camera-did", Model: supportedModel, IP: "192.168.2.84", MAC: "94:F8:27:00:00:01"}
+	currentDevice := &cloud.Device{Did: previousDevice.Did, Model: previousDevice.Model, IP: "192.168.2.85", MAC: previousDevice.MAC}
+	id := cameraID(previousDevice.Did)
+	oldPath := newFakeCameraPath(false)
+	oldSource := &cameraSource{device: previousDevice, id: id, path: oldPath}
+	provider := &Provider{
+		cfg:               Config{Region: "de"},
+		deviceInventory:   &fakeDeviceInventory{devices: []*cloud.Device{currentDevice}},
+		sources:           map[model.CameraID]*cameraSource{id: oldSource},
+		devices:           []*cloud.Device{previousDevice},
+		loaded:            time.Now().Add(-time.Minute),
+		inventoryRevision: 8,
+	}
+	oldSource.provider = provider
+
+	cameras, err := provider.Cameras(context.Background())
+	if err != nil {
+		t.Fatalf("Cameras() after address change: %v", err)
+	}
+	if len(cameras) != 1 || cameras[0].ID != id {
+		t.Fatalf("camera inventory = %#v", cameras)
+	}
+	provider.mu.RLock()
+	newSource := provider.sources[id]
+	newRevision := provider.inventoryRevision
+	gotIP := provider.devices[0].IP
+	provider.mu.RUnlock()
+	newSourceIP := ""
+	if newSource != nil && newSource.device != nil {
+		newSourceIP = newSource.device.IP
+	}
+	if newSource == nil || newSource == oldSource || newSourceIP != currentDevice.IP || newRevision != 9 || gotIP != currentDevice.IP {
+		t.Fatalf("source/inventory after update = source_replaced:%t source_ip:%q inventory_revision:%d inventory_ip:%q", newSource != nil && newSource != oldSource, newSourceIP, newRevision, gotIP)
+	}
+	oldSource.mu.Lock()
+	oldClosed := oldSource.closed
+	oldSource.mu.Unlock()
+	if !oldClosed || oldPath.closeCountValue() != 1 {
+		t.Fatalf("retired source closed=%t path closes=%d, want true/1", oldClosed, oldPath.closeCountValue())
 	}
 }
 
@@ -470,6 +560,143 @@ func (s *fakeCameraSession) stats() (diagnosticCalls, writes, closeCount int, di
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.diagnosticCalls, s.writes, s.closeCount, append([]string(nil), s.directions...)
+}
+
+type fakeProviderRouteResolver struct {
+	interfaceName string
+	calls         int
+	afterLookup   func(int)
+}
+
+func (r *fakeProviderRouteResolver) Lookup(ctx context.Context, _ net.IP) (localmedia.Route, error) {
+	if err := ctx.Err(); err != nil {
+		return localmedia.Route{}, err
+	}
+	r.calls++
+	if r.afterLookup != nil {
+		r.afterLookup(r.calls)
+	}
+	return localmedia.Route{Interface: r.interfaceName}, nil
+}
+
+type fakeProviderMissSessionSource struct {
+	dids    []string
+	err     error
+	session *cloud.MissSession
+}
+
+func (s *fakeProviderMissSessionSource) MissVendor(did string) (*cloud.MissSession, error) {
+	s.dids = append(s.dids, did)
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.session != nil {
+		copy := *s.session
+		return &copy, nil
+	}
+	return &cloud.MissSession{Vendor: "cs2"}, nil
+}
+
+func newLocalMediaStartFixture(route *fakeProviderRouteResolver) (*Provider, *cameraSource, *fakeProviderMissSessionSource, *fakeCameraPath, *fakeCameraSession) {
+	device := &cloud.Device{Did: "c201-local-test", Model: supportedModel, IP: "192.168.2.84", MAC: "94:F8:27:00:00:01"}
+	provider := &Provider{
+		cfg:                Config{Region: "de", LocalMediaRequired: true},
+		missSessionSource:  &fakeProviderMissSessionSource{},
+		localMediaNetworks: []localmedia.AllowedNetwork{{CIDR: "192.168.2.0/24", Interface: "lan0"}},
+		routeResolver:      route,
+		sources:            map[model.CameraID]*cameraSource{},
+		devices:            []*cloud.Device{device},
+		loaded:             time.Now(),
+		inventoryRevision:  27,
+	}
+	missSource := provider.missSessionSource.(*fakeProviderMissSessionSource)
+	path := newFakeCameraPath(false)
+	session := newFakeCameraSession(true)
+	source := &cameraSource{provider: provider, device: device, id: cameraID(device.Did)}
+	source.inventoryRevision.Store(provider.inventoryRevision)
+	provider.sources[source.id] = source
+	return provider, source, missSource, path, session
+}
+
+func startLocalMediaFixture(source *cameraSource, path *fakeCameraPath) {
+	done, starting := make(chan struct{}), make(chan struct{})
+	source.mu.Lock()
+	source.path, source.sessionDone, source.starting = path, done, starting
+	source.mu.Unlock()
+	source.start(context.Background(), path, done, starting)
+	<-starting
+}
+
+func TestProviderLocalMediaPolicyPinsVerifiedTargetAndOpensOnce(t *testing.T) {
+	routes := &fakeProviderRouteResolver{interfaceName: "lan0"}
+	provider, source, missSource, path, session := newLocalMediaStartFixture(routes)
+	var gotTarget localmedia.SessionTarget
+	var gotConfig stream.Config
+	var openCalls int
+	// The injected opener supplies an offline fake transport while preserving
+	// the production policy path and its exact verified target.
+	provider.openMediaSession = func(ctx context.Context, target localmedia.SessionTarget, config stream.Config) (localmedia.Session, error) {
+		openCalls++
+		gotTarget, gotConfig = target, config
+		return session, nil
+	}
+	startLocalMediaFixture(source, path)
+	defer source.close()
+	if routes.calls != 2 || !reflect.DeepEqual(missSource.dids, []string{"c201-local-test"}) || openCalls != 1 {
+		t.Fatalf("route calls / MissVendor DIDs / media opens = %d / %v / %d, want 2 / one matching DID / one", routes.calls, missSource.dids, openCalls)
+	}
+	if gotTarget.DID != "c201-local-test" || !gotTarget.IP.Equal(net.ParseIP("192.168.2.84")) || gotTarget.Interface != "lan0" || gotTarget.InventoryRevision != 27 {
+		t.Fatalf("opened target = %#v", gotTarget)
+	}
+	if gotConfig.Host != "192.168.2.84" || gotConfig.Interface != "lan0" {
+		t.Fatalf("session transport target = %#v, want verified IP and interface", gotConfig)
+	}
+	source.mu.Lock()
+	opened := source.session != nil
+	source.mu.Unlock()
+	if !opened {
+		t.Fatal("verified local session was not installed")
+	}
+}
+
+func TestProviderLocalMediaPreflightAndStaleSecondRouteNeverOpenSession(t *testing.T) {
+	t.Run("preflight route mismatch", func(t *testing.T) {
+		routes := &fakeProviderRouteResolver{interfaceName: "wlan0"}
+		provider, source, missSource, path, _ := newLocalMediaStartFixture(routes)
+		var openCalls int
+		provider.openMediaSession = func(context.Context, localmedia.SessionTarget, stream.Config) (localmedia.Session, error) {
+			openCalls++
+			return newFakeCameraSession(true), nil
+		}
+		startLocalMediaFixture(source, path)
+		if routes.calls != 1 || len(missSource.dids) != 0 || openCalls != 0 {
+			t.Fatalf("route/MissVendor/session opens = %d/%v/%d, want 1/0/0", routes.calls, missSource.dids, openCalls)
+		}
+		provider.Close()
+	})
+
+	t.Run("inventory changes during second route check", func(t *testing.T) {
+		routes := &fakeProviderRouteResolver{interfaceName: "lan0"}
+		provider, source, missSource, path, _ := newLocalMediaStartFixture(routes)
+		var openCalls int
+		provider.openMediaSession = func(context.Context, localmedia.SessionTarget, stream.Config) (localmedia.Session, error) {
+			openCalls++
+			return newFakeCameraSession(true), nil
+		}
+		routes.afterLookup = func(call int) {
+			if call == 2 {
+				provider.mu.Lock()
+				provider.devices = []*cloud.Device{{Did: "c201-local-test", Model: supportedModel, IP: "192.168.2.85", MAC: "94:F8:27:00:00:01"}}
+				provider.inventoryRevision++
+				provider.mu.Unlock()
+			}
+		}
+		startLocalMediaFixture(source, path)
+		if routes.calls != 2 || !reflect.DeepEqual(missSource.dids, []string{"c201-local-test"}) || openCalls != 0 {
+			t.Fatalf("route/MissVendor/session opens = %d/%v/%d, want 2/one cloud prep/0", routes.calls, missSource.dids, openCalls)
+		}
+		provider.Close()
+	})
 }
 
 func TestCameraDiagnosticsReadsExistingSessionWithoutOpeningOrReading(t *testing.T) {

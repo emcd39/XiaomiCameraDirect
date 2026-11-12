@@ -52,6 +52,7 @@ type Frame struct {
 type Config struct {
 	Host      string
 	Transport string
+	Interface string
 	Model     string
 	Channel   string
 	Quality   string
@@ -166,15 +167,16 @@ const replyLogDepth = 32
 
 // Open connects, authenticates and starts the media flow.
 func Open(cfg Config) (*Session, error) {
-	client, err := miss.Dial(miss.Config{
+	client, err := miss.DialOnInterface(miss.Config{
 		Host:          cfg.Host,
 		Transport:     cfg.Transport,
+		Interface:     cfg.Interface,
 		Model:         cfg.Model,
 		DevicePublic:  cfg.DevicePublic,
 		ClientPublic:  cfg.ClientPublic,
 		ClientPrivate: cfg.ClientPrivate,
 		Sign:          cfg.Sign,
-	})
+	}, cfg.Interface)
 	if err != nil {
 		return nil, err
 	}

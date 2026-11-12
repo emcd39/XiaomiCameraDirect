@@ -95,6 +95,7 @@ const (
 type Config struct {
 	Host          string
 	Transport     string // "", "udp" or "tcp"
+	Interface     string // optional OS interface pin for local_media_required
 	Model         string
 	DevicePublic  string
 	ClientPublic  string
@@ -110,12 +111,18 @@ type Client struct {
 
 // Dial performs the CS2 handshake and the MISS authentication exchange.
 func Dial(cfg Config) (*Client, error) {
+	return DialOnInterface(cfg, cfg.Interface)
+}
+
+// DialOnInterface pins the CS2 handshake and negotiated TCP/UDP transport to
+// one OS interface. An empty interface preserves ordinary provider behavior.
+func DialOnInterface(cfg Config, interfaceName string) (*Client, error) {
 	key, err := crypto.CalcSharedKey(cfg.DevicePublic, cfg.ClientPrivate)
 	if err != nil {
 		return nil, fmt.Errorf("miss: shared key: %w", err)
 	}
 
-	conn, err := cs2.Dial(cfg.Host, cfg.Transport)
+	conn, err := cs2.DialOnInterface(cfg.Host, cfg.Transport, interfaceName)
 	if err != nil {
 		return nil, err
 	}

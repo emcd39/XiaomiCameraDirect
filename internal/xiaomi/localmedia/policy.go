@@ -44,7 +44,7 @@ type InventorySnapshot struct {
 }
 
 type Inventory interface {
-	Snapshot(context.Context) (InventorySnapshot, error)
+	CameraInventory(context.Context) (InventorySnapshot, error)
 }
 
 type Route struct {
@@ -71,8 +71,12 @@ type SessionTarget struct {
 	InventoryRevision uint64
 }
 
+type Session interface {
+	Close()
+}
+
 type SessionOpener interface {
-	Open(context.Context, SessionTarget) error
+	Open(context.Context, SessionTarget) (Session, error)
 }
 
 type Request struct {
@@ -103,60 +107,75 @@ type verifiedTarget struct {
 // Open performs local preflight before cloud preparation and repeats both
 // inventory and route checks immediately before opening the local session.
 // Every dependency is injected; this package's tests use fakes only.
-func (p Policy) Open(ctx context.Context, request Request) error {
+func (p Policy) Open(ctx context.Context, request Request) (Session, error) {
 	if ctx == nil || ctx.Err() != nil {
 		if ctx != nil {
-			return ctx.Err()
+			return nil, ctx.Err()
 		}
-		return context.Canceled
+		return nil, context.Canceled
 	}
 	if strings.TrimSpace(request.DID) == "" || strings.TrimSpace(request.ExpectedModelID) == "" || request.InventoryRevision == 0 ||
 		p.Inventory == nil || p.Routes == nil || p.Cloud == nil || p.Sessions == nil || len(p.AllowedNetworks) == 0 {
-		return ErrInvalidPolicy
+		return nil, ErrInvalidPolicy
 	}
 
 	target, err := p.currentTarget(ctx, request)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := p.verifyRoute(ctx, target); err != nil {
-		return err
+		return nil, err
 	}
 	// Do not send MISS/cloud work when identity or route changed during preflight.
 	if _, err := p.currentTarget(ctx, request); err != nil {
-		return err
+		return nil, err
 	}
 	if err := p.Cloud.Prepare(ctx, target.camera.DID); err != nil {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return nil, ctx.Err()
 		}
-		return ErrCloudMaterialUnavailable
+		return nil, ErrCloudMaterialUnavailable
 	}
 
 	current, err := p.currentTarget(ctx, request)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := p.verifyRoute(ctx, current); err != nil {
-		return err
+		return nil, err
+	}
+	// A second inventory read after route lookup closes the route-check window:
+	// if the same DID acquired a new address/revision while the route was read,
+	// the old endpoint is never handed to the session opener.
+	current, err = p.currentTarget(ctx, request)
+	if err != nil {
+		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
-	if err := p.Sessions.Open(ctx, SessionTarget{
+	session, err := p.Sessions.Open(ctx, SessionTarget{
 		DID: current.camera.DID, IP: append(net.IP(nil), current.ip...),
 		Interface: current.iface, InventoryRevision: current.revision,
-	}); err != nil {
+	})
+	if err != nil {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return nil, ctx.Err()
 		}
-		return ErrSessionOpen
+		return nil, ErrSessionOpen
 	}
-	return nil
+	if session == nil {
+		return nil, ErrSessionOpen
+	}
+	if err := ctx.Err(); err != nil {
+		session.Close()
+		return nil, err
+	}
+	return session, nil
 }
 
 func (p Policy) currentTarget(ctx context.Context, request Request) (verifiedTarget, error) {
-	snapshot, err := p.Inventory.Snapshot(ctx)
+	snapshot, err := p.Inventory.CameraInventory(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
 			return verifiedTarget{}, ctx.Err()

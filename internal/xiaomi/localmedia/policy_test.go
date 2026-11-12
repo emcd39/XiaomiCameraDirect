@@ -23,7 +23,7 @@ type fakeInventory struct {
 	events   *[]string
 }
 
-func (i *fakeInventory) Snapshot(ctx context.Context) (InventorySnapshot, error) {
+func (i *fakeInventory) CameraInventory(ctx context.Context) (InventorySnapshot, error) {
 	if err := ctx.Err(); err != nil {
 		return InventorySnapshot{}, err
 	}
@@ -87,13 +87,20 @@ type fakeSessions struct {
 	err     error
 }
 
-func (s *fakeSessions) Open(ctx context.Context, target SessionTarget) error {
+type fakeSession struct{}
+
+func (fakeSession) Close() {}
+
+func (s *fakeSessions) Open(ctx context.Context, target SessionTarget) (Session, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
 	s.targets = append(s.targets, target)
 	*s.events = append(*s.events, "open")
-	return s.err
+	if s.err != nil {
+		return nil, s.err
+	}
+	return fakeSession{}, nil
 }
 
 func newPolicyFixture(ip string, routeInterfaces ...string) (Policy, *fakeInventory, *fakeRoutes, *fakeCloud, *fakeSessions, *[]string, Request) {
@@ -116,17 +123,21 @@ func newPolicyFixture(ip string, routeInterfaces ...string) (Policy, *fakeInvent
 
 func TestOpenVerifiesInventoryCIDRAndInterfaceBeforeOpeningSession(t *testing.T) {
 	policy, inventory, routes, cloud, sessions, events, request := newPolicyFixture(testCameraIP, testInterface, testInterface)
-	if err := policy.Open(context.Background(), request); err != nil {
+	opened, err := policy.Open(context.Background(), request)
+	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
-	if inventory.reads != 3 || routes.calls != 2 || !reflect.DeepEqual(cloud.dids, []string{testDID}) || len(sessions.targets) != 1 {
+	if opened == nil {
+		t.Fatal("Open() returned a nil session")
+	}
+	if inventory.reads != 4 || routes.calls != 2 || !reflect.DeepEqual(cloud.dids, []string{testDID}) || len(sessions.targets) != 1 {
 		t.Fatalf("calls inventory/routes/cloud/session = %d/%d/%v/%d", inventory.reads, routes.calls, cloud.dids, len(sessions.targets))
 	}
 	got := sessions.targets[0]
 	if got.DID != testDID || !got.IP.Equal(net.ParseIP(testCameraIP)) || got.Interface != testInterface || got.InventoryRevision != testRevision {
 		t.Fatalf("opened target = %#v", got)
 	}
-	wantEvents := []string{"inventory", "route", "inventory", "cloud", "inventory", "route", "open"}
+	wantEvents := []string{"inventory", "route", "inventory", "cloud", "inventory", "route", "inventory", "open"}
 	if !reflect.DeepEqual(*events, wantEvents) {
 		t.Fatalf("operation order = %v, want %v", *events, wantEvents)
 	}
@@ -148,7 +159,7 @@ func TestOpenFailsClosedForNetworkAndInterfaceBeforeCloud(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			policy, _, routes, cloud, sessions, _, request := newPolicyFixture(test.ip, test.route)
-			err := policy.Open(context.Background(), request)
+			_, err := policy.Open(context.Background(), request)
 			if !errors.Is(err, test.want) {
 				t.Fatalf("Open() error = %v, want %v", err, test.want)
 			}
@@ -176,7 +187,7 @@ func TestOpenRejectsInventoryRevisionOrIPChangeForSameDIDBeforeCloud(t *testing.
 					inventory.replace(test.revision, Camera{DID: testDID, ModelID: testModel, Firmware: testFirmware, IP: test.ip, MAC: "94:F8:27:00:00:01"})
 				}
 			}
-			if err := policy.Open(context.Background(), request); !errors.Is(err, ErrInventoryStale) {
+			if _, err := policy.Open(context.Background(), request); !errors.Is(err, ErrInventoryStale) {
 				t.Fatalf("Open() error = %v, want ErrInventoryStale", err)
 			}
 			if routes.calls != 1 || len(cloud.dids) != 0 || len(sessions.targets) != 0 {
@@ -191,7 +202,7 @@ func TestOpenRejectsInventoryChangeDuringCloudPreparationBeforeSession(t *testin
 	cloud.afterCall = func() {
 		inventory.replace(testRevision+1, Camera{DID: testDID, ModelID: testModel, Firmware: testFirmware, IP: "192.168.2.85", MAC: "94:F8:27:00:00:01"})
 	}
-	if err := policy.Open(context.Background(), request); !errors.Is(err, ErrInventoryStale) {
+	if _, err := policy.Open(context.Background(), request); !errors.Is(err, ErrInventoryStale) {
 		t.Fatalf("Open() error = %v, want ErrInventoryStale", err)
 	}
 	if routes.calls != 1 || !reflect.DeepEqual(cloud.dids, []string{testDID}) || len(sessions.targets) != 0 {
@@ -201,11 +212,26 @@ func TestOpenRejectsInventoryChangeDuringCloudPreparationBeforeSession(t *testin
 
 func TestOpenRejectsRouteInterfaceChangeBeforeSession(t *testing.T) {
 	policy, _, routes, cloud, sessions, _, request := newPolicyFixture(testCameraIP, testInterface, "wlan0")
-	if err := policy.Open(context.Background(), request); !errors.Is(err, ErrRouteInterfaceMismatch) {
+	if _, err := policy.Open(context.Background(), request); !errors.Is(err, ErrRouteInterfaceMismatch) {
 		t.Fatalf("Open() error = %v, want ErrRouteInterfaceMismatch", err)
 	}
 	if routes.calls != 2 || len(cloud.dids) != 1 || len(sessions.targets) != 0 {
 		t.Fatalf("route/cloud/session calls = %d/%v/%d, route change reached session opener", routes.calls, cloud.dids, len(sessions.targets))
+	}
+}
+
+func TestOpenRejectsInventoryChangeDuringSecondRouteCheck(t *testing.T) {
+	policy, inventory, routes, cloud, sessions, _, request := newPolicyFixture(testCameraIP, testInterface, testInterface)
+	routes.afterCheck = func(call int) {
+		if call == 2 {
+			inventory.replace(testRevision+1, Camera{DID: testDID, ModelID: testModel, Firmware: testFirmware, IP: "192.168.2.85", MAC: "94:F8:27:00:00:01"})
+		}
+	}
+	if _, err := policy.Open(context.Background(), request); !errors.Is(err, ErrInventoryStale) {
+		t.Fatalf("Open() error = %v, want ErrInventoryStale", err)
+	}
+	if routes.calls != 2 || len(cloud.dids) != 1 || len(sessions.targets) != 0 {
+		t.Fatalf("route/cloud/session calls = %d/%v/%d, changed inventory reached session opener", routes.calls, cloud.dids, len(sessions.targets))
 	}
 }
 
@@ -229,7 +255,7 @@ func TestOpenRejectsModelFirmwareMACAndAmbiguousAllowlist(t *testing.T) {
 			if test.camera.DID != "" {
 				inventory.snapshot.Cameras[0] = test.camera
 			}
-			if err := policy.Open(context.Background(), request); !errors.Is(err, test.want) {
+			if _, err := policy.Open(context.Background(), request); !errors.Is(err, test.want) {
 				t.Fatalf("Open() error = %v, want %v", err, test.want)
 			}
 			if len(cloud.dids) != 0 || len(sessions.targets) != 0 {
@@ -240,7 +266,7 @@ func TestOpenRejectsModelFirmwareMACAndAmbiguousAllowlist(t *testing.T) {
 
 	policy, _, routes, cloud, sessions, _, request := newPolicyFixture(testCameraIP, testInterface)
 	policy.AllowedNetworks = append(policy.AllowedNetworks, AllowedNetwork{CIDR: "192.168.2.0/24", Interface: "wlan0"})
-	if err := policy.Open(context.Background(), request); !errors.Is(err, ErrInvalidPolicy) {
+	if _, err := policy.Open(context.Background(), request); !errors.Is(err, ErrInvalidPolicy) {
 		t.Fatalf("ambiguous allowlist error = %v, want ErrInvalidPolicy", err)
 	}
 	if routes.calls != 0 || len(cloud.dids) != 0 || len(sessions.targets) != 0 {

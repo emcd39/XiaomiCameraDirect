@@ -12,7 +12,9 @@ package cs2
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -22,13 +24,19 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
+	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/xiaomi/localmedia"
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/xiaomi/protocol/lan"
 )
 
 func Dial(host, transport string) (*Conn, error) {
-	conn, err := handshake(host, transport)
+	return DialOnInterface(host, transport, "")
+}
+
+func DialOnInterface(host, transport, interfaceName string) (*Conn, error) {
+	conn, err := handshakeOnInterface(host, transport, interfaceName)
 	if err != nil {
 		return nil, err
 	}
@@ -197,11 +205,19 @@ const (
 var HandshakeTimeout = 15 * time.Second
 
 func handshake(host, transport string) (net.Conn, error) {
-	return handshakeOnPort(host, 32108, transport)
+	return handshakeOnInterface(host, transport, "")
+}
+
+func handshakeOnInterface(host, transport, interfaceName string) (net.Conn, error) {
+	return handshakeOnPortWithInterface(host, 32108, transport, interfaceName)
 }
 
 func handshakeOnPort(host string, port int, transport string) (net.Conn, error) {
-	conn, err := newUDPConn(host, port)
+	return handshakeOnPortWithInterface(host, port, transport, "")
+}
+
+func handshakeOnPortWithInterface(host string, port int, transport, interfaceName string) (net.Conn, error) {
+	conn, err := newUDPConnWithInterface(host, port, interfaceName)
 	if err != nil {
 		return nil, err
 	}
@@ -260,7 +276,7 @@ func handshakeOnPort(host string, port int, transport string) (net.Conn, error) 
 
 	if res[1] == msgTCP {
 		_ = conn.Close()
-		return newTCPConn(conn.RemoteAddr().String())
+		return newTCPConnWithInterface(conn.RemoteAddr().String(), interfaceName)
 	}
 
 	return conn, nil
@@ -543,6 +559,10 @@ func marshalData(channel byte, seq uint16, prefix, payload []byte) []byte {
 }
 
 func newUDPConn(host string, port int) (net.Conn, error) {
+	return newUDPConnWithInterface(host, port, "")
+}
+
+func newUDPConnWithInterface(host string, port int, interfaceName string) (net.Conn, error) {
 	// A raw UDPConn, because the peer address changes during the handshake when
 	// the camera answers from a different port than we punched to.
 	addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, strconv.Itoa(port)))
@@ -563,11 +583,25 @@ func newUDPConn(host string, port int) (net.Conn, error) {
 		network = "udp6"
 	}
 
-	conn, err := net.ListenUDP(network, nil)
+	if interfaceName == "" {
+		conn, err := net.ListenUDP(network, nil)
+		if err != nil {
+			return nil, err
+		}
+		return &udpConn{UDPConn: conn, addr: addr}, nil
+	}
+	listen := net.ListenConfig{Control: func(network, address string, raw syscall.RawConn) error {
+		return localmedia.BindSocketToInterface(network, interfaceName, raw)
+	}}
+	packet, err := listen.ListenPacket(context.Background(), network, ":0")
 	if err != nil {
 		return nil, err
 	}
-
+	conn, ok := packet.(*net.UDPConn)
+	if !ok {
+		_ = packet.Close()
+		return nil, errors.New("cs2: interface-bound UDP listener is not a UDP socket")
+	}
 	return &udpConn{UDPConn: conn, addr: addr}, nil
 }
 
@@ -688,7 +722,29 @@ func validControlDatagram(data []byte) bool {
 }
 
 func newTCPConn(addr string) (net.Conn, error) {
-	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+	return newTCPConnWithInterface(addr, "")
+}
+
+func newTCPConnWithInterface(addr, interfaceName string) (net.Conn, error) {
+	if interfaceName == "" {
+		conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		return &tcpConn{conn.(*net.TCPConn), bufio.NewReader(conn)}, nil
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	network := "tcp6"
+	if ip := net.ParseIP(strings.Trim(host, "[]")); ip == nil || ip.To4() != nil {
+		network = "tcp4"
+	}
+	dialer := net.Dialer{Timeout: 3 * time.Second, Control: func(network, address string, raw syscall.RawConn) error {
+		return localmedia.BindSocketToInterface(network, interfaceName, raw)
+	}}
+	conn, err := dialer.Dial(network, addr)
 	if err != nil {
 		return nil, err
 	}
