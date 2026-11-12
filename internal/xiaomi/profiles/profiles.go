@@ -95,9 +95,10 @@ func NewRegistry(profiles ...Profile) (*Registry, error) {
 	return &Registry{profiles: cloned}, nil
 }
 
-// Resolve returns a unique model profile. Missing or unknown firmware and an
-// unlisted region may select the unique model fallback, but only baseline
-// features remain enabled until firmware and region are both verified.
+// Resolve prefers a profile whose firmware and applicable region both match.
+// Exact region entries take precedence over a wildcard profile for the same
+// firmware. Missing or unknown data may select a unique safe fallback, but
+// only baseline features remain enabled until firmware and region are verified.
 func (r *Registry) Resolve(modelID, firmware, region string) (Match, error) {
 	if r == nil {
 		return Match{}, ErrNoProfile
@@ -115,36 +116,54 @@ func (r *Registry) Resolve(modelID, firmware, region string) (Match, error) {
 		return Match{}, ErrNoProfile
 	}
 
-	regionKnown := false
-	if region != "" {
-		var regional []Profile
-		var wildcard []Profile
-		for _, profile := range candidates {
-			if slices.Contains(profile.Regions, region) {
-				regional = append(regional, profile)
-			} else if slices.Contains(profile.Regions, "*") {
-				wildcard = append(wildcard, profile)
-			}
-		}
-		if len(regional) > 0 {
-			candidates, regionKnown = regional, true
-		} else if len(wildcard) > 0 {
-			candidates = wildcard
+	var regional, wildcard []Profile
+	for _, profile := range candidates {
+		if region != "" && slices.Contains(profile.Regions, region) {
+			regional = append(regional, profile)
+		} else if region != "" && slices.Contains(profile.Regions, "*") {
+			wildcard = append(wildcard, profile)
 		}
 	}
 
-	firmwareKnown := false
 	if firmware != "" {
-		var firmwareMatches []Profile
+		var regionalFirmware, wildcardFirmware, unspecifiedRegionFirmware []Profile
 		for _, profile := range candidates {
-			if slices.Contains(profile.FirmwareVersions, firmware) {
-				firmwareMatches = append(firmwareMatches, profile)
+			if !slices.Contains(profile.FirmwareVersions, firmware) {
+				continue
+			}
+			switch {
+			case region == "":
+				unspecifiedRegionFirmware = append(unspecifiedRegionFirmware, profile)
+			case slices.Contains(profile.Regions, region):
+				regionalFirmware = append(regionalFirmware, profile)
+			case slices.Contains(profile.Regions, "*"):
+				wildcardFirmware = append(wildcardFirmware, profile)
 			}
 		}
-		if len(firmwareMatches) > 0 {
-			candidates, firmwareKnown = firmwareMatches, true
+		if len(regionalFirmware) > 0 {
+			return uniqueMatch(regionalFirmware, true, true, modelID)
+		}
+		if len(wildcardFirmware) > 0 {
+			return uniqueMatch(wildcardFirmware, true, false, modelID)
+		}
+		if region == "" && len(unspecifiedRegionFirmware) > 0 {
+			return uniqueMatch(unspecifiedRegionFirmware, true, false, modelID)
 		}
 	}
+
+	// Preserve the existing model behavior as a baseline when firmware is
+	// missing/unknown. Prefer an exact region fallback, then a unique wildcard,
+	// and only then a unique model fallback with no region verification.
+	if len(regional) > 0 {
+		return uniqueMatch(regional, false, true, modelID)
+	}
+	if len(wildcard) > 0 {
+		return uniqueMatch(wildcard, false, false, modelID)
+	}
+	return uniqueMatch(candidates, false, false, modelID)
+}
+
+func uniqueMatch(candidates []Profile, firmwareKnown, regionKnown bool, modelID string) (Match, error) {
 	if len(candidates) != 1 {
 		return Match{}, fmt.Errorf("%w: %s", ErrProfileAmbiguous, modelID)
 	}
@@ -218,10 +237,20 @@ func validate(profile Profile) error {
 }
 
 func overlaps(a, b Profile) bool {
-	if a.ModelID != b.ModelID || !intersects(a.Regions, b.Regions, true) {
+	if a.ModelID != b.ModelID || !intersects(a.FirmwareVersions, b.FirmwareVersions, false) {
 		return false
 	}
-	return intersects(a.FirmwareVersions, b.FirmwareVersions, false)
+	for _, left := range a.Regions {
+		for _, right := range b.Regions {
+			// A concrete regional profile is a deterministic override for a
+			// wildcard fallback, so that pair is intentional rather than a
+			// conflict. Equal concrete regions or two wildcard profiles overlap.
+			if left == right {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func intersects(a, b []string, wildcard bool) bool {

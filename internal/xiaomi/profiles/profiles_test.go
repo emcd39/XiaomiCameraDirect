@@ -99,6 +99,78 @@ func TestWildcardRegionDoesNotCountAsVerifiedRegion(t *testing.T) {
 	}
 }
 
+func TestResolveCombinesFirmwareAndRegionBeforeSelectingFallback(t *testing.T) {
+	regional := C201()
+	regional.ID = "c201-de-fw-a"
+	regional.FirmwareVersions = []string{"firmware-a"}
+	regional.VerifiedFeatures = []Feature{"de_firmware_feature"}
+	wildcard := C201()
+	wildcard.ID = "c201-any-fw-b"
+	wildcard.Regions = []string{"*"}
+	wildcard.FirmwareVersions = []string{"firmware-b"}
+	wildcard.VerifiedFeatures = []Feature{"wildcard_firmware_feature"}
+	registry, err := NewRegistry(regional, wildcard)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+
+	match, err := registry.Resolve(ModelC201, "firmware-b", "de")
+	if err != nil {
+		t.Fatalf("Resolve(de, firmware-b): %v", err)
+	}
+	if match.Profile.ID != wildcard.ID || !match.FirmwareKnown || match.RegionKnown {
+		t.Fatalf("de/firmware-b selected %#v; want wildcard firmware-b with unverified region", match)
+	}
+	if match.Supports("wildcard_firmware_feature") || match.Supports("de_firmware_feature") {
+		t.Fatalf("wildcard profile enabled region-gated features: %#v", match)
+	}
+
+	match, err = registry.Resolve(ModelC201, "firmware-a", "de")
+	if err != nil {
+		t.Fatalf("Resolve(de, firmware-a): %v", err)
+	}
+	if match.Profile.ID != regional.ID || !match.FirmwareKnown || !match.RegionKnown || !match.Supports("de_firmware_feature") {
+		t.Fatalf("exact regional profile was not preferred: %#v", match)
+	}
+
+	match, err = registry.Resolve(ModelC201, "", "de")
+	if err != nil {
+		t.Fatalf("Resolve(de, missing firmware): %v", err)
+	}
+	if match.Profile.ID != regional.ID || match.FirmwareKnown || !match.RegionKnown || match.Supports("de_firmware_feature") {
+		t.Fatalf("missing firmware did not keep safe regional baseline: %#v", match)
+	}
+}
+
+func TestSpecificRegionOverridesWildcardForSameFirmware(t *testing.T) {
+	regional := C201()
+	regional.ID = "c201-de-specific"
+	regional.VerifiedFeatures = []Feature{"de_specific_feature"}
+	wildcard := C201()
+	wildcard.ID = "c201-wildcard-fallback"
+	wildcard.Regions = []string{"*"}
+	wildcard.VerifiedFeatures = []Feature{"wildcard_feature"}
+	registry, err := NewRegistry(regional, wildcard)
+	if err != nil {
+		t.Fatalf("NewRegistry() rejected a regional override plus wildcard fallback: %v", err)
+	}
+
+	match, err := registry.Resolve(ModelC201, "5.3.2_0016", "de")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if match.Profile.ID != regional.ID || !match.RegionKnown || !match.Supports("de_specific_feature") {
+		t.Fatalf("specific region did not override wildcard: %#v", match)
+	}
+	match, err = registry.Resolve(ModelC201, "5.3.2_0016", "us")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if match.Profile.ID != wildcard.ID || match.RegionKnown || match.Supports("wildcard_feature") {
+		t.Fatalf("wildcard fallback was not kept region-unverified: %#v", match)
+	}
+}
+
 func TestUnknownModelHasNoProfile(t *testing.T) {
 	if _, err := DefaultRegistry().Resolve("xiaomi.camera.unknown", "", "de"); !errors.Is(err, ErrNoProfile) {
 		t.Fatalf("unknown model error = %v, want no profile", err)
