@@ -696,10 +696,9 @@ func (p *Provider) Cameras(ctx context.Context) ([]model.Camera, error) {
 	return p.publishCameras(devices, refreshed, sequence)
 }
 
-// publishCameras only accepts inventory snapshots whose request began no
-// earlier than the most recently published snapshot. A slower old request can
-// still return the currently published result to its caller, but cannot renew
-// its age, advance its revision, or replace its sources.
+// publishCameras accepts ordering only from cloud inventory results. Cache
+// reads are resolved against the currently published inventory under p.mu and
+// never advance the cloud sequence, refresh timestamp, or inventory revision.
 func (p *Provider) publishCameras(devices []*cloud.Device, refreshed bool, sequence uint64) ([]model.Camera, error) {
 	cameras := make([]model.Camera, 0, len(devices))
 	sources := make(map[model.CameraID]*cameraSource, len(devices))
@@ -708,14 +707,16 @@ func (p *Provider) publishCameras(devices []*cloud.Device, refreshed bool, seque
 		p.mu.Unlock()
 		return nil, ErrCameraUnavailable
 	}
-	if sequence < p.inventoryPublishedSequence {
+	if !refreshed {
+		devices = append([]*cloud.Device(nil), p.devices...)
+	} else if sequence < p.inventoryPublishedSequence {
 		devices = append([]*cloud.Device(nil), p.devices...)
 		refreshed = false
-	} else if sequence > p.inventoryPublishedSequence {
+	} else {
 		p.inventoryPublishedSequence = sequence
 	}
 	revision := p.inventoryRevision
-	if refreshed || revision == 0 {
+	if refreshed {
 		revision++
 		p.inventoryRevision = revision
 		p.loaded = time.Now()
@@ -759,9 +760,6 @@ func (p *Provider) publishCameras(devices []*cloud.Device, refreshed bool, seque
 	}
 	p.sources = sources
 	p.devices = devices
-	if p.loaded.IsZero() {
-		p.loaded = time.Now()
-	}
 	p.mu.Unlock()
 	for _, source := range retired {
 		source.close()
