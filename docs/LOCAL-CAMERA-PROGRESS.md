@@ -85,3 +85,18 @@ go run ./cmd/camera-probe -gateway http://127.0.0.1:8099 -dry-run
 go run ./cmd/camera-probe -gateway http://127.0.0.1:8099 -inventory
 ```
 
+## Kandidáti dalších kamer, 2026-11-12
+
+Uživatel určil dvě kamery pro budoucí kompatibilitní testy. Pro jejich identifikaci jsem provedl pouze místní read-only kontrolu dostupnosti diagnostického prostředí; na kamery se neposílal žádný paket a nebyl spuštěn cloudový refresh ani inventární dotaz.
+
+| Kandidát | Zadaná adresa | Zadaný MAC prefix | Identita a firmware | Video | PTZ | Lokální datová cesta |
+| --- | --- | --- | --- | --- | --- | --- |
+| C400 | `192.168.2.84` | `94:F8:27:` (neúplný; chybí zbytek MAC) | Neověřeno. Kód obsahuje modelové ID `chuangmi.camera.039a04` pro C400, ale jeho přiřazení k této IP ani firmware nejsou potvrzené. | `UNVERIFIED` | `UNVERIFIED` | `UNVERIFIED` |
+| Mi 360 | `192.168.2.184` | `78:8B:2A:` (neúplný; chybí zbytek MAC) | Neověřeno; přesné modelové ID a firmware nejsou potvrzené. | `UNVERIFIED` | `UNVERIFIED` | `UNVERIFIED` |
+
+### Dostupnost identity pro headless test
+
+Kontrola místního hostu 2026-11-12 nenašla proces gateway/diagnostické konzole ani TCP listener na diagnostických portech `63983`, `8099`, `8123` a `8554`. V tabulce sousedů nebyl záznam pro `192.168.2.84` ani `192.168.2.184`; v tabulce tras nebyla konkrétní trasa `192.168.2.0/24`. Proto nebyl dostupný běžící lokální autorizovaný gateway endpoint/inventář, přes který by šlo provést headless read-only přiřazení. Nebyl použit token, zahájen nový cloudový login ani odeslán požadavek na gateway či kameru.
+
+K pokračování identifikace je potřeba spustit již autorizovanou gateway se zpřístupněným lokálním inventářem a získat úplnou MAC adresu každé kamery. Teprve přesná položka inventáře může potvrdit vazbu IP ↔ MAC ↔ modelové ID ↔ firmware. Samotný prefix MAC, název C400/Mi 360 ani dostupnost adresy tuto vazbu nedokládají. Po potvrzení identity se video, PTZ a přímá lokální datová cesta musí ověřit samostatným živým důkazem pro každou kameru; současný záznam neprokazuje podporu žádné z těchto funkcí.
+
