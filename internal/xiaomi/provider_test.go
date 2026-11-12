@@ -15,6 +15,7 @@ import (
 
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/backend"
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/model"
+	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/xiaomi/profiles"
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/xiaomi/protocol/cloud"
 	"github.com/xiaomi-local-gateway/xiaomi-local-gateway/internal/xiaomi/protocol/stream"
 )
@@ -22,13 +23,31 @@ import (
 func TestConfigFromEnvLeavesProviderDisabledWithoutCredentials(t *testing.T) {
 	for _, key := range []string{
 		"XLG_XIAOMI_USER_ID", "XLG_XIAOMI_REGION", "XLG_XIAOMI_TOKEN",
-		"XLG_RTSP_ADVERTISE_HOST", "XLG_RTSP_LISTEN", "XLG_FFMPEG_PATH",
+		"XLG_RTSP_ADVERTISE_HOST", "XLG_RTSP_LISTEN", "XLG_FFMPEG_PATH", "XLG_XIAOMI_PROFILE_TEST_MODE",
 	} {
 		t.Setenv(key, "")
 	}
 	cfg, configured, err := ConfigFromEnv()
 	if err != nil || configured || cfg != (Config{}) {
 		t.Fatalf("ConfigFromEnv() = %#v, %t, %v; want zero config, disabled, nil", cfg, configured, err)
+	}
+}
+
+func TestConfigFromEnvRequiresExplicitExperimentalProfileTestMode(t *testing.T) {
+	t.Setenv("XLG_XIAOMI_USER_ID", "test-user")
+	t.Setenv("XLG_XIAOMI_REGION", "de")
+	t.Setenv("XLG_XIAOMI_TOKEN", "test-token")
+	t.Setenv("XLG_RTSP_ADVERTISE_HOST", "127.0.0.1")
+	t.Setenv("XLG_XIAOMI_PROFILE_TEST_MODE", "")
+
+	cfg, configured, err := ConfigFromEnv()
+	if err != nil || !configured || cfg.TestExperimentalProfiles {
+		t.Fatalf("default profile test mode = %#v, configured=%t, err=%v", cfg, configured, err)
+	}
+	t.Setenv("XLG_XIAOMI_PROFILE_TEST_MODE", "true")
+	cfg, configured, err = ConfigFromEnv()
+	if err != nil || !configured || !cfg.TestExperimentalProfiles {
+		t.Fatalf("explicit profile test mode = %#v, configured=%t, err=%v", cfg, configured, err)
 	}
 }
 
@@ -133,6 +152,79 @@ func TestProviderDoesNotAdvertiseUnprofiledCandidateModels(t *testing.T) {
 		if camera.Support == nil || camera.Support.Features["video"].Reason != model.ErrorUnsupportedModel {
 			t.Errorf("unprofiled candidate lacks explicit unsupported state: %#v", camera.Support)
 		}
+	}
+}
+
+func TestProviderExperimentalProfileRequiresExplicitTestMode(t *testing.T) {
+	const experimentalModel = "test.camera.experimental"
+	registry, err := profiles.NewRegistry(profiles.Profile{
+		ID: "test-experimental-profile", Revision: 1, ModelID: experimentalModel,
+		Regions: []string{"de"}, FirmwareVersions: []string{"test-fw"},
+		Vendor: "cs2", ApplicationProtocol: "MISS", MediaProtocol: "CS2",
+		VideoCodec: "H265", Channel: "0", Quality: "auto", Experimental: true,
+		BaselineFeatures: []profiles.Feature{profiles.FeatureVideo, profiles.FeatureSnapshot, profiles.FeaturePTZ},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	device := &cloud.Device{Did: "experimental-camera", Name: "Experimental", Model: experimentalModel}
+	id := cameraID(device.Did)
+
+	provider := &Provider{
+		cfg:             Config{Region: "de"},
+		profileRegistry: registry,
+		sources:         make(map[model.CameraID]*cameraSource),
+		devices:         []*cloud.Device{device},
+		loaded:          time.Now(),
+	}
+	cameras, err := provider.Cameras(context.Background())
+	if err != nil || len(cameras) != 1 {
+		t.Fatalf("default-mode Cameras() = %#v, err=%v", cameras, err)
+	}
+	if cameras[0].Selected || cameras[0].Capabilities.Video || cameras[0].Capabilities.Snapshot || cameras[0].Video.State != model.VideoUnsupported {
+		t.Fatalf("default mode exposed experimental capabilities: %#v", cameras[0])
+	}
+	if len(provider.sources) != 0 {
+		t.Fatalf("default mode created %d media sources for experimental model", len(provider.sources))
+	}
+	if _, err := provider.Streams(context.Background(), id); !errors.Is(err, ErrUnsupportedCamera) {
+		t.Fatalf("default mode Streams() error = %v, want ErrUnsupportedCamera", err)
+	}
+	if err := provider.Step(context.Background(), id, "left"); !errors.Is(err, ErrUnsupportedCamera) {
+		t.Fatalf("default mode Step() error = %v, want ErrUnsupportedCamera", err)
+	}
+	if len(provider.sources) != 0 {
+		t.Fatalf("default-mode requests created a media source")
+	}
+
+	testProvider := &Provider{
+		cfg:             Config{Region: "de", TestExperimentalProfiles: true},
+		profileRegistry: registry,
+		sources:         make(map[model.CameraID]*cameraSource),
+		devices:         []*cloud.Device{device},
+		loaded:          time.Now(),
+	}
+	testCameras, err := testProvider.Cameras(context.Background())
+	if err != nil || len(testCameras) != 1 {
+		t.Fatalf("test-mode Cameras() = %#v, err=%v", testCameras, err)
+	}
+	if !testCameras[0].Capabilities.Video || !testCameras[0].Capabilities.Snapshot || testCameras[0].Selected {
+		t.Fatalf("explicit test mode did not expose only declared non-autoselected capabilities: %#v", testCameras[0])
+	}
+	if testCameras[0].Support == nil || testCameras[0].Support.Features["video"].Implementation != "research" {
+		t.Fatalf("test-mode profile evidence was not marked experimental: %#v", testCameras[0].Support)
+	}
+
+	ptzProvider, ptzID, source, _, session, _ := newProviderStepFixture(true, true)
+	ptzProvider.cfg = Config{Region: "de", TestExperimentalProfiles: true}
+	ptzProvider.profileRegistry = registry
+	source.device.Model = experimentalModel
+	if err := ptzProvider.Step(context.Background(), ptzID, "left"); err != nil {
+		t.Fatalf("test-mode Step() error = %v", err)
+	}
+	<-session.diagnosticEntered
+	if diagnostics, writes, _, directions := session.stats(); diagnostics != 1 || writes != 1 || !reflect.DeepEqual(directions, []string{"left"}) {
+		t.Fatalf("test-mode diagnostics/writes/directions = %d/%d/%v, want one declared PTZ write", diagnostics, writes, directions)
 	}
 }
 

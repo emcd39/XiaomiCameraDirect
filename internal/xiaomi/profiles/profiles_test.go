@@ -82,6 +82,15 @@ func TestRegistryRejectsFeaturePresentInBaselineAndVerifiedSets(t *testing.T) {
 	}
 }
 
+func TestExperimentalProfileCannotAutoSelectCamera(t *testing.T) {
+	profile := C201()
+	profile.ID = "experimental-c201-profile"
+	profile.Experimental = true
+	if _, err := NewRegistry(profile); !errors.Is(err, ErrInvalidProfile) {
+		t.Fatalf("experimental auto-select profile error = %v, want invalid profile", err)
+	}
+}
+
 func TestWildcardRegionDoesNotCountAsVerifiedRegion(t *testing.T) {
 	profile := C201()
 	profile.Regions = []string{"*"}

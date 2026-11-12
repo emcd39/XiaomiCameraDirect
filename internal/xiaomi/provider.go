@@ -55,13 +55,14 @@ var (
 )
 
 type Config struct {
-	UserID        string
-	Region        string
-	Token         string
-	AdvertiseHost string
-	RTSPListen    string
-	RTSPPort      int
-	FFmpegPath    string
+	UserID                   string
+	Region                   string
+	Token                    string
+	AdvertiseHost            string
+	RTSPListen               string
+	RTSPPort                 int
+	FFmpegPath               string
+	TestExperimentalProfiles bool
 }
 
 // ConfigFromEnv reads the private pilot/runtime settings. Empty settings mean
@@ -81,6 +82,13 @@ func ConfigFromEnv() (Config, bool, error) {
 	}
 	if cfg.UserID == "" || cfg.Region == "" || cfg.Token == "" || cfg.AdvertiseHost == "" {
 		return Config{}, true, ErrCredentialsIncomplete
+	}
+	if raw := strings.TrimSpace(os.Getenv("XLG_XIAOMI_PROFILE_TEST_MODE")); raw != "" {
+		profileTestMode, err := strconv.ParseBool(raw)
+		if err != nil {
+			return Config{}, true, errors.New("invalid Xiaomi profile test mode")
+		}
+		cfg.TestExperimentalProfiles = profileTestMode
 	}
 	if cfg.RTSPListen == "" {
 		cfg.RTSPListen = defaultRTSPListen
@@ -106,9 +114,10 @@ func ConfigFromEnv() (Config, bool, error) {
 }
 
 type Provider struct {
-	cfg     Config
-	account *cloud.Account
-	relay   *streamrtsp.Relay
+	cfg             Config
+	account         *cloud.Account
+	relay           *streamrtsp.Relay
+	profileRegistry *profiles.Registry
 
 	mu      sync.RWMutex
 	sources map[model.CameraID]*cameraSource
@@ -560,8 +569,8 @@ func restoreFailureClass(err error) string {
 	return "protocol_error"
 }
 
-// Cameras returns the Xiaomi camera inventory with only the verified C201
-// model marked stream-capable. Other models remain visible as unsupported.
+// Cameras returns Xiaomi inventory with profile-derived capabilities. Profiles
+// marked experimental are available only when the explicit test mode is on.
 func (p *Provider) Cameras(ctx context.Context) ([]model.Camera, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -595,7 +604,7 @@ func (p *Provider) Cameras(ctx context.Context) ([]model.Camera, error) {
 		if supported && match.Supports(profiles.FeatureVideo) {
 			camera.Capabilities.Video = match.Supports(profiles.FeatureVideo)
 			camera.Capabilities.Snapshot = match.Supports(profiles.FeatureSnapshot)
-			camera.Support = c201SupportEvidence()
+			camera.Support = profileSupportEvidence(match)
 			source := p.sources[id]
 			if source == nil || source.device.Did != device.Did {
 				source = &cameraSource{provider: p, device: device, id: id}
@@ -660,6 +669,32 @@ func c201SupportEvidence() *model.CameraSupport {
 	}
 }
 
+func profileSupportEvidence(match profiles.Match) *model.CameraSupport {
+	if match.Profile.ID == profiles.C201ID {
+		return c201SupportEvidence()
+	}
+	if !match.Profile.Experimental {
+		return unsupportedModelSupportEvidence()
+	}
+	features := make(map[string]model.FeatureSupport)
+	for _, feature := range []profiles.Feature{
+		profiles.FeatureVideo, profiles.FeatureSnapshot, profiles.FeaturePTZ,
+		profiles.FeatureSettingsRead, profiles.FeatureSessionDiagnostics,
+	} {
+		evidence := model.FeatureSupport{
+			Implementation: "research", Validation: "none", Path: "unknown",
+			Availability: "unavailable", Reason: model.ErrorUnsupportedModel,
+			RequiresCloud: []string{},
+		}
+		if match.Supports(feature) {
+			evidence.Availability = "unknown"
+			evidence.Reason = model.ErrorUnverifiedFirmware
+		}
+		features[string(feature)] = evidence
+	}
+	return &model.CameraSupport{SchemaVersion: 1, Features: features}
+}
+
 func unsupportedModelSupportEvidence() *model.CameraSupport {
 	features := make(map[string]model.FeatureSupport)
 	for _, name := range []string{"video", "snapshot", "audio", "ptz", "presets", "camera_settings_read"} {
@@ -684,11 +719,18 @@ func (p *Provider) profileForDevice(device *cloud.Device) (profiles.Match, bool)
 		return profiles.Match{}, false
 	}
 	region := ""
+	registry := cameraProfiles
 	if p != nil {
 		region = p.cfg.Region
+		if p.profileRegistry != nil {
+			registry = p.profileRegistry
+		}
 	}
-	match, err := cameraProfiles.Resolve(device.Model, "", region)
-	return match, err == nil
+	match, err := registry.Resolve(device.Model, "", region)
+	if err != nil || match.Profile.Experimental && (p == nil || !p.cfg.TestExperimentalProfiles) {
+		return profiles.Match{}, false
+	}
+	return match, true
 }
 
 func (p *Provider) cameraDevices() ([]*cloud.Device, error) {

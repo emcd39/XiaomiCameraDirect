@@ -45,6 +45,7 @@ type Profile struct {
 	Channel             string
 	Quality             string
 	Audio               bool
+	Experimental        bool
 	// AutoSelect preserves only an explicitly chosen legacy default. New model
 	// profiles remain unselected unless they opt in deliberately.
 	AutoSelect       bool
@@ -190,6 +191,9 @@ func DefaultRegistry() *Registry {
 }
 
 func validate(profile Profile) error {
+	if profile.Experimental && profile.AutoSelect {
+		return ErrInvalidProfile
+	}
 	for _, value := range []string{profile.ID, profile.ModelID, profile.Vendor, profile.ApplicationProtocol, profile.MediaProtocol, profile.VideoCodec, profile.Channel, profile.Quality} {
 		if value == "" || strings.TrimSpace(value) != value {
 			return ErrInvalidProfile
