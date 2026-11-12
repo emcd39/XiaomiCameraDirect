@@ -128,11 +128,37 @@ func TestSameCameraSourceIdentityIncludesCurrentEndpoint(t *testing.T) {
 }
 
 type fakeDeviceInventory struct {
-	devices []*cloud.Device
+	mu           sync.Mutex
+	devices      []*cloud.Device
+	calls        int
+	firstEntered chan struct{}
+	firstRelease <-chan struct{}
 }
 
 func (f *fakeDeviceInventory) Devices() ([]*cloud.Device, error) {
-	return append([]*cloud.Device(nil), f.devices...), nil
+	f.mu.Lock()
+	f.calls++
+	call := f.calls
+	devices := append([]*cloud.Device(nil), f.devices...)
+	entered, release := f.firstEntered, f.firstRelease
+	f.mu.Unlock()
+	if call == 1 && entered != nil {
+		close(entered)
+		<-release
+	}
+	return devices, nil
+}
+
+func (f *fakeDeviceInventory) replace(devices ...*cloud.Device) {
+	f.mu.Lock()
+	f.devices = append([]*cloud.Device(nil), devices...)
+	f.mu.Unlock()
+}
+
+func (f *fakeDeviceInventory) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
 }
 
 func TestProviderReplacesSourceWhenSameDIDGetsNewIP(t *testing.T) {
@@ -175,6 +201,156 @@ func TestProviderReplacesSourceWhenSameDIDGetsNewIP(t *testing.T) {
 	oldSource.mu.Unlock()
 	if !oldClosed || oldPath.closeCountValue() != 1 {
 		t.Fatalf("retired source closed=%t path closes=%d, want true/1", oldClosed, oldPath.closeCountValue())
+	}
+}
+
+func TestProviderDoesNotPublishDelayedCachedInventoryAfterRefresh(t *testing.T) {
+	oldDevice := &cloud.Device{Did: "overlap-camera", Model: supportedModel, IP: "192.168.2.84", MAC: "94:F8:27:00:00:01"}
+	newDevice := &cloud.Device{Did: oldDevice.Did, Model: oldDevice.Model, IP: "192.168.2.85", MAC: oldDevice.MAC}
+	id := cameraID(oldDevice.Did)
+	oldSource := &cameraSource{device: oldDevice, id: id}
+	inventory := &fakeDeviceInventory{devices: []*cloud.Device{newDevice}}
+	provider := &Provider{
+		cfg:               Config{Region: "de"},
+		deviceInventory:   inventory,
+		sources:           map[model.CameraID]*cameraSource{id: oldSource},
+		devices:           []*cloud.Device{oldDevice},
+		loaded:            time.Now(),
+		inventoryRevision: 5,
+	}
+	oldSource.provider = provider
+
+	// Pause between the cache copy and its publication, then let a later refresh
+	// publish the new address first. This exercises the same two phases used by
+	// Cameras() without relying on goroutine timing.
+	cached, refreshed, staleSequence, err := provider.cameraDevices()
+	if err != nil || refreshed || staleSequence == 0 || len(cached) != 1 || cached[0].IP != oldDevice.IP {
+		t.Fatalf("cache read = %#v, refreshed=%t, sequence=%d, err=%v", cached, refreshed, staleSequence, err)
+	}
+	provider.mu.Lock()
+	provider.loaded = time.Now().Add(-time.Minute)
+	provider.mu.Unlock()
+	if _, err := provider.Cameras(context.Background()); err != nil {
+		t.Fatalf("newer inventory refresh: %v", err)
+	}
+	if _, err := provider.publishCameras(cached, refreshed, staleSequence); err != nil {
+		t.Fatalf("delayed cache publication: %v", err)
+	}
+	provider.mu.RLock()
+	gotIP := provider.devices[0].IP
+	gotRevision := provider.inventoryRevision
+	gotSequence := provider.inventoryPublishedSequence
+	gotSource := provider.sources[id]
+	publishedAt := provider.loaded
+	provider.mu.RUnlock()
+	if gotIP != newDevice.IP || gotRevision != 6 || gotSequence <= staleSequence || gotSource == oldSource || gotSource.device.IP != newDevice.IP || publishedAt.IsZero() {
+		t.Fatalf("state after delayed cache publish = ip:%s revision:%d sequence:%d source_ip:%v", gotIP, gotRevision, gotSequence, gotSource)
+	}
+}
+
+func TestProviderOverlappingRefreshesCannotRestoreOldAddress(t *testing.T) {
+	oldDevice := &cloud.Device{Did: "overlap-camera", Model: supportedModel, IP: "192.168.2.84", MAC: "94:F8:27:00:00:01"}
+	newDevice := &cloud.Device{Did: oldDevice.Did, Model: oldDevice.Model, IP: "192.168.2.85", MAC: oldDevice.MAC}
+	id := cameraID(oldDevice.Did)
+	oldPath := newFakeCameraPath(false)
+	oldSource := &cameraSource{device: oldDevice, id: id, path: oldPath}
+	releaseFirst := make(chan struct{})
+	inventory := &fakeDeviceInventory{
+		devices:      []*cloud.Device{oldDevice},
+		firstEntered: make(chan struct{}),
+		firstRelease: releaseFirst,
+	}
+	routes := &fakeProviderRouteResolver{interfaceName: "lan0"}
+	missSource := &fakeProviderMissSessionSource{}
+	provider := &Provider{
+		cfg:                Config{Region: "de", LocalMediaRequired: true},
+		deviceInventory:    inventory,
+		missSessionSource:  missSource,
+		localMediaNetworks: []localmedia.AllowedNetwork{{CIDR: "192.168.2.0/24", Interface: "lan0"}},
+		routeResolver:      routes,
+		sources:            map[model.CameraID]*cameraSource{id: oldSource},
+		devices:            []*cloud.Device{oldDevice},
+		loaded:             time.Now().Add(-time.Minute),
+		inventoryRevision:  8,
+	}
+	oldSource.provider = provider
+
+	type camerasResult struct {
+		cameras []model.Camera
+		err     error
+	}
+	olderResult := make(chan camerasResult, 1)
+	go func() {
+		cameras, err := provider.Cameras(context.Background())
+		olderResult <- camerasResult{cameras: cameras, err: err}
+	}()
+	select {
+	case <-inventory.firstEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first inventory refresh did not block at the fake source")
+	}
+	inventory.replace(newDevice)
+	newerResult := make(chan camerasResult, 1)
+	go func() {
+		cameras, err := provider.Cameras(context.Background())
+		newerResult <- camerasResult{cameras: cameras, err: err}
+	}()
+	select {
+	case result := <-newerResult:
+		if result.err != nil || len(result.cameras) != 1 || result.cameras[0].ID != id {
+			t.Fatalf("newer Cameras() = %d cameras, err=%v", len(result.cameras), result.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("newer inventory refresh did not finish while the older refresh was blocked")
+	}
+	provider.mu.RLock()
+	newerPublishedAt := provider.loaded
+	newerRevision := provider.inventoryRevision
+	provider.mu.RUnlock()
+	if newerRevision != 9 {
+		t.Fatalf("newer inventory revision = %d, want 9", newerRevision)
+	}
+	close(releaseFirst)
+	select {
+	case result := <-olderResult:
+		if result.err != nil || len(result.cameras) != 1 || result.cameras[0].ID != id {
+			t.Fatalf("older Cameras() = %d cameras, err=%v", len(result.cameras), result.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("older inventory refresh did not finish after release")
+	}
+	if inventory.callCount() != 2 {
+		t.Fatalf("inventory refresh calls = %d, want both overlapping refreshes", inventory.callCount())
+	}
+	provider.mu.RLock()
+	newSource := provider.sources[id]
+	gotIP := provider.devices[0].IP
+	gotRevision := provider.inventoryRevision
+	gotPublishedAt := provider.loaded
+	gotSequence := provider.inventoryPublishedSequence
+	provider.mu.RUnlock()
+	if newSource == nil || newSource == oldSource || newSource.device.IP != newDevice.IP || gotIP != newDevice.IP || gotRevision != 9 || !gotPublishedAt.Equal(newerPublishedAt) || gotSequence != 2 {
+		t.Fatalf("inventory restored an old publication: ip=%s revision=%d source=%#v published_at_equal=%t sequence=%d", gotIP, gotRevision, newSource, gotPublishedAt.Equal(newerPublishedAt), gotSequence)
+	}
+	oldSource.mu.Lock()
+	oldClosed := oldSource.closed
+	oldSource.mu.Unlock()
+	if !oldClosed || oldPath.closeCountValue() != 1 {
+		t.Fatalf("old source closed=%t, old path closes=%d; want true/1", oldClosed, oldPath.closeCountValue())
+	}
+
+	var openedConfig stream.Config
+	provider.openMediaSession = func(_ context.Context, target localmedia.SessionTarget, config stream.Config) (localmedia.Session, error) {
+		if !target.IP.Equal(net.ParseIP(newDevice.IP)) || target.InventoryRevision != 9 {
+			t.Fatalf("next session target = %#v, want refreshed IP/revision", target)
+		}
+		openedConfig = config
+		return newFakeCameraSession(true), nil
+	}
+	startLocalMediaFixture(newSource, newFakeCameraPath(false))
+	defer provider.Close()
+	if openedConfig.Host != newDevice.IP || openedConfig.Interface != "lan0" || !reflect.DeepEqual(missSource.dids, []string{newDevice.Did}) {
+		t.Fatalf("next session config/account DID = %#v / %v; want only the refreshed IP and DID", openedConfig, missSource.dids)
 	}
 }
 

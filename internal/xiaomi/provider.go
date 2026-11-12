@@ -142,12 +142,14 @@ type Provider struct {
 	routeResolver      localmedia.RouteResolver
 	openMediaSession   func(context.Context, localmedia.SessionTarget, stream.Config) (localmedia.Session, error)
 
-	mu                sync.RWMutex
-	sources           map[model.CameraID]*cameraSource
-	devices           []*cloud.Device
-	loaded            time.Time
-	inventoryRevision uint64
-	closed            bool
+	mu                         sync.RWMutex
+	sources                    map[model.CameraID]*cameraSource
+	devices                    []*cloud.Device
+	loaded                     time.Time
+	inventoryRevision          uint64
+	inventoryRequestSequence   uint64
+	inventoryPublishedSequence uint64
+	closed                     bool
 
 	closeOnce sync.Once
 }
@@ -687,16 +689,30 @@ func (p *Provider) Cameras(ctx context.Context) ([]model.Camera, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	devices, refreshed, err := p.cameraDevices()
+	devices, refreshed, sequence, err := p.cameraDevices()
 	if err != nil {
 		return nil, ErrCameraUnavailable
 	}
+	return p.publishCameras(devices, refreshed, sequence)
+}
+
+// publishCameras only accepts inventory snapshots whose request began no
+// earlier than the most recently published snapshot. A slower old request can
+// still return the currently published result to its caller, but cannot renew
+// its age, advance its revision, or replace its sources.
+func (p *Provider) publishCameras(devices []*cloud.Device, refreshed bool, sequence uint64) ([]model.Camera, error) {
 	cameras := make([]model.Camera, 0, len(devices))
 	sources := make(map[model.CameraID]*cameraSource, len(devices))
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
 		return nil, ErrCameraUnavailable
+	}
+	if sequence < p.inventoryPublishedSequence {
+		devices = append([]*cloud.Device(nil), p.devices...)
+		refreshed = false
+	} else if sequence > p.inventoryPublishedSequence {
+		p.inventoryPublishedSequence = sequence
 	}
 	revision := p.inventoryRevision
 	if refreshed || revision == 0 {
@@ -876,24 +892,28 @@ func (p *Provider) profileForDevice(device *cloud.Device) (profiles.Match, bool)
 	return match, true
 }
 
-func (p *Provider) cameraDevices() ([]*cloud.Device, bool, error) {
-	p.mu.RLock()
+func (p *Provider) cameraDevices() ([]*cloud.Device, bool, uint64, error) {
+	// The request sequence is assigned before either a cache read or a remote
+	// refresh, so cache-backed results take part in stale-publication checks too.
+	p.mu.Lock()
+	p.inventoryRequestSequence++
+	sequence := p.inventoryRequestSequence
 	if !p.loaded.IsZero() && time.Since(p.loaded) < 30*time.Second {
 		devices := append([]*cloud.Device(nil), p.devices...)
-		p.mu.RUnlock()
-		return devices, false, nil
+		p.mu.Unlock()
+		return devices, false, sequence, nil
 	}
-	p.mu.RUnlock()
+	p.mu.Unlock()
 	if p.deviceInventory == nil {
-		return nil, false, ErrCameraUnavailable
+		return nil, false, sequence, ErrCameraUnavailable
 	}
 	devices, err := p.deviceInventory.Devices()
 	if err != nil {
 		log.Printf("xiaomi_backend event=inventory result=error")
-		return nil, false, err
+		return nil, false, sequence, err
 	}
 	log.Printf("xiaomi_backend event=inventory result=ok camera_count=%d", len(devices))
-	return devices, true, nil
+	return devices, true, sequence, nil
 }
 
 // CameraInventory exposes only the last successfully loaded account inventory
