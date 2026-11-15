@@ -1,0 +1,159 @@
+# Replace the entity IDs with the IDs in your Home Assistant.
+title: Xiaomi kamery
+views:
+  - title: Všechny kamery
+    path: mi-360
+    type: panel
+    cards:
+      - type: grid
+        title: Xiaomi kamery
+        columns: 2
+        square: false
+        cards:
+          - type: picture-elements
+            title: Mi 360
+            camera_image: camera.xiaomi_mi_360
+            camera_view: live
+            elements:
+              - type: icon
+                entity: button.xiaomi_mi_360_ptz_up
+                icon: mdi:arrow-up
+                title: Nahoru
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.xiaomi_mi_360_ptz_up
+                hold_action: {action: none}
+                double_tap_action: {action: none}
+                style:
+                  <<: &ptz_style
+                    transform: none
+                    color: white
+                    background: rgba(16, 20, 28, 0.78)
+                    border: 1px solid rgba(255, 255, 255, 0.34)
+                    border-radius: 50%
+                    box-sizing: border-box
+                    width: 44px
+                    height: 44px
+                    display: grid
+                    place-items: center
+                    z-index: 1
+                  right: 62px
+                  bottom: 108px
+              - type: icon
+                entity: button.xiaomi_mi_360_ptz_left
+                icon: mdi:arrow-left
+                title: Vlevo
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.xiaomi_mi_360_ptz_left
+                hold_action: {action: none}
+                double_tap_action: {action: none}
+                style:
+                  <<: *ptz_style
+                  right: 112px
+                  bottom: 58px
+              - type: icon
+                entity: button.xiaomi_mi_360_ptz_right
+                icon: mdi:arrow-right
+                title: Vpravo
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.xiaomi_mi_360_ptz_right
+                hold_action: {action: none}
+                double_tap_action: {action: none}
+                style:
+                  <<: *ptz_style
+                  right: 12px
+                  bottom: 58px
+              - type: icon
+                entity: button.xiaomi_mi_360_ptz_down
+                icon: mdi:arrow-down
+                title: Dolů
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.xiaomi_mi_360_ptz_down
+                hold_action: {action: none}
+                double_tap_action: {action: none}
+                style:
+                  <<: *ptz_style
+                  right: 62px
+                  bottom: 8px
+          - type: picture-elements
+            title: C201
+            camera_image: camera.xiaomi_c201
+            camera_view: live
+            elements:
+              - type: icon
+                entity: button.xiaomi_c201_ptz_up
+                icon: mdi:arrow-up
+                title: Nahoru
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.xiaomi_c201_ptz_up
+                hold_action: {action: none}
+                double_tap_action: {action: none}
+                style:
+                  <<: *ptz_style
+                  right: 62px
+                  bottom: 108px
+              - type: icon
+                entity: button.xiaomi_c201_ptz_left
+                icon: mdi:arrow-left
+                title: Vlevo
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.xiaomi_c201_ptz_left
+                hold_action: {action: none}
+                double_tap_action: {action: none}
+                style:
+                  <<: *ptz_style
+                  right: 112px
+                  bottom: 58px
+              - type: icon
+                entity: button.xiaomi_c201_ptz_right
+                icon: mdi:arrow-right
+                title: Vpravo
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.xiaomi_c201_ptz_right
+                hold_action: {action: none}
+                double_tap_action: {action: none}
+                style:
+                  <<: *ptz_style
+                  right: 12px
+                  bottom: 58px
+              - type: icon
+                entity: button.xiaomi_c201_ptz_down
+                icon: mdi:arrow-down
+                title: Dolů
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.xiaomi_c201_ptz_down
+                hold_action: {action: none}
+                double_tap_action: {action: none}
+                style:
+                  <<: *ptz_style
+                  right: 62px
+                  bottom: 8px
+          - type: markdown
+            title: C400
+            content: Živý obraz zatím neověřen.
+          - type: markdown
+            title: Outdoor
+            content: Gateway pro tento model zatím neposkytuje obraz.
