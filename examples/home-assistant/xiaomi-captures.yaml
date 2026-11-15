@@ -1,0 +1,45 @@
+xiaomi_camera_snapshot:
+  alias: Xiaomi camera snapshot
+  description: Save a JPEG from the selected camera to local HA media.
+  mode: parallel
+  max: 4
+  fields:
+    camera_entity:
+      name: Camera
+      required: true
+      selector:
+        entity:
+          filter:
+            - domain: camera
+  sequence:
+    - condition: template
+      value_template: "{{ camera_entity | default('') | regex_match('^camera[.][a-z0-9_]+$') }}"
+    - action: camera.snapshot
+      target:
+        entity_id: "{{ camera_entity }}"
+      data:
+        filename: "/media/xiaomi/{{ camera_entity.split('.')[1] }}-{{ now().strftime('%Y%m%d-%H%M%S-%f') }}.jpg"
+
+xiaomi_camera_record:
+  alias: Xiaomi camera 20-second recording
+  description: Save a short MP4 from the selected camera to local HA media.
+  mode: parallel
+  max: 2
+  fields:
+    camera_entity:
+      name: Camera
+      required: true
+      selector:
+        entity:
+          filter:
+            - domain: camera
+  sequence:
+    - condition: template
+      value_template: "{{ camera_entity | default('') | regex_match('^camera[.][a-z0-9_]+$') }}"
+    - action: camera.record
+      target:
+        entity_id: "{{ camera_entity }}"
+      data:
+        duration: 20
+        lookback: 0
+        filename: "/media/xiaomi/{{ camera_entity.split('.')[1] }}-{{ now().strftime('%Y%m%d-%H%M%S-%f') }}.mp4"

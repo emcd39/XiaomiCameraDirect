@@ -86,6 +86,36 @@ views:
                   <<: *ptz_style
                   right: 62px
                   bottom: 8px
+              - type: icon
+                entity: script.xiaomi_camera_snapshot
+                icon: mdi:camera
+                title: Snímek
+                tap_action:
+                  action: perform-action
+                  perform_action: script.xiaomi_camera_snapshot
+                  data:
+                    camera_entity: camera.xiaomi_mi_360
+                hold_action: {action: none}
+                double_tap_action: {action: none}
+                style:
+                  <<: &capture_style
+                    <<: *ptz_style
+                    bottom: 8px
+                  left: 12px
+              - type: icon
+                entity: script.xiaomi_camera_record
+                icon: mdi:record-circle-outline
+                title: Záznam (20 s)
+                tap_action:
+                  action: perform-action
+                  perform_action: script.xiaomi_camera_record
+                  data:
+                    camera_entity: camera.xiaomi_mi_360
+                hold_action: {action: none}
+                double_tap_action: {action: none}
+                style:
+                  <<: *capture_style
+                  left: 62px
           - type: picture-elements
             title: C201
             camera_image: camera.xiaomi_c201
@@ -151,6 +181,34 @@ views:
                   <<: *ptz_style
                   right: 62px
                   bottom: 8px
+              - type: icon
+                entity: script.xiaomi_camera_snapshot
+                icon: mdi:camera
+                title: Snímek
+                tap_action:
+                  action: perform-action
+                  perform_action: script.xiaomi_camera_snapshot
+                  data:
+                    camera_entity: camera.xiaomi_c201
+                hold_action: {action: none}
+                double_tap_action: {action: none}
+                style:
+                  <<: *capture_style
+                  left: 12px
+              - type: icon
+                entity: script.xiaomi_camera_record
+                icon: mdi:record-circle-outline
+                title: Záznam (20 s)
+                tap_action:
+                  action: perform-action
+                  perform_action: script.xiaomi_camera_record
+                  data:
+                    camera_entity: camera.xiaomi_c201
+                hold_action: {action: none}
+                double_tap_action: {action: none}
+                style:
+                  <<: *capture_style
+                  left: 62px
           - type: markdown
             title: C400
             content: Živý obraz zatím neověřen.
