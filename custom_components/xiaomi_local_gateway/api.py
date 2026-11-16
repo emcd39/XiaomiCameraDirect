@@ -18,6 +18,10 @@ class GatewayEndpointUnavailable(GatewayError):
     """The managed API is absent, so a legacy read may be used."""
 
 
+class GatewayPTZSessionUnavailable(GatewayError):
+    """The gateway explicitly rejected PTZ before sending the command."""
+
+
 class GatewayClient:
     def __init__(self, session: ClientSession, base_url: str, token: str) -> None:
         self._session = session
@@ -42,6 +46,8 @@ class GatewayClient:
                         error = await response.json()
                     except (json.JSONDecodeError, ValueError):
                         error = None
+                    if isinstance(error, dict) and error.get("error") == "ptz_session_unavailable":
+                        raise GatewayPTZSessionUnavailable("Camera control session is not active")
                     if isinstance(error, dict) and error.get("error") == "backend_unavailable":
                         raise GatewayEndpointUnavailable("Managed camera API is unavailable")
                 response.raise_for_status()

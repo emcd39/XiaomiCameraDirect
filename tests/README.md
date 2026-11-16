@@ -1,5 +1,13 @@
 # Local integration test stack
 
+For the direct HA pilot, run `python -B -m unittest discover -s tests -p "test_ha_direct_*.py"`
+from the repository root, using the pinned HA image or the dependencies
+in [requirements.txt](requirements.txt). The checks cover preflight, MISS
+media framing and decryption without camera access. In the pinned HA image, also run
+`python3 -B -m unittest discover -s tests/e2e -p test_ha_direct_media_decode.py`
+for synthetic H.265 decryption and decoding with FFmpeg. See the [C201 pilot runbook](../docs/HA-DIRECT-PILOT.md)
+for checking the route and CS2 discovery from the target HA network namespace.
+
 From the repository root, run the quick camera regression in a disposable
 Linux container:
 

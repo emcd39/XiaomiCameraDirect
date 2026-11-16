@@ -223,6 +223,9 @@ async def test_late_settings_capability(session, token: str) -> None:
         if not authorized(request):
             return web.json_response({"error": "unauthorized"}, status=401)
         body = await request.json()
+        if ("ready", request.match_info["camera_id"]) not in state["action_calls"]:
+            state["action_calls"].append(("no_session", request.match_info["camera_id"]))
+            return web.json_response({"error": "ptz_session_unavailable"}, status=503)
         state["action_calls"].append(("step", request.match_info["camera_id"], body.get("direction")))
         return web.json_response({"write_status": "sent"})
 
@@ -313,7 +316,8 @@ async def test_late_settings_capability(session, token: str) -> None:
             )
         await api(session, token, "POST", "/api/services/button/press", {"entity_id": "button.late_c201_ptz_left"})
         if state["action_calls"] != [
-            ("prepare", "late_c201"), ("ready", "late_c201"), ("step", "late_c201", "left")
+            ("no_session", "late_c201"), ("prepare", "late_c201"), ("ready", "late_c201"),
+            ("step", "late_c201", "left")
         ]:
             raise RuntimeError(f"Unexpected cold PTZ calls: {state['action_calls']}")
         print(json.dumps({"phase": "on_demand_cold_ptz", "idle_media_requests": 0,

@@ -523,7 +523,7 @@ func (h *Handler) managedStepOnce(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if errors.Is(err, xiaomi.ErrCameraUnavailable) {
-			respond(w, http.StatusServiceUnavailable, map[string]string{"error": string(model.ErrorBackendUnavailable)})
+			respond(w, http.StatusServiceUnavailable, map[string]string{"error": "ptz_session_unavailable"})
 			return
 		}
 		respond(w, http.StatusBadGateway, map[string]string{"error": "ptz_step_failed"})

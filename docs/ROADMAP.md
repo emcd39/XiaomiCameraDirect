@@ -1,17 +1,21 @@
 # Development roadmap
 
-## Active delivery plan — simple setup and reliable operation
+## Active delivery plan — direct Home Assistant integration
+
+The [direct HA integration and test plan](HA-DIRECT-PLAN.md) sets the
+implementation order, the physical acceptance criteria, and the optional
+Frigate path. The direct mode runs inside Home Assistant. The Go gateway
+remains available as a reference implementation and a standalone backend.
+
+## Earlier delivery plans and scope inventory
 
 The [C201 delivery plan](DELIVERY-PLAN.md) defines the user-facing scope,
 physical acceptance tests, and release criteria for video, camera movement,
 and the other camera features.
 
-The implementation order is now defined in [SIMPLE-STABLE-PLAN.md](SIMPLE-STABLE-PLAN.md)
-(Czech), with a bounded handoff prompt in [NEXT-TASK.md](NEXT-TASK.md).
-Prioritize a verified C201 backend, one managed runtime, HA onboarding,
-persistent settings and recovery. Native MISS development is deferred until
-hardware evidence shows it is necessary. The milestones below remain the
-original scope inventory; they are not the current implementation order.
+[SIMPLE-STABLE-PLAN.md](SIMPLE-STABLE-PLAN.md) and
+[NEXT-TASK.md](NEXT-TASK.md) describe the earlier gateway milestones and
+physical diagnostics. The milestones below record the original scope.
 
 ## Milestone M0 — architecture + testable skeleton (in this ZIP)
 - [x] Go API with auth, PTZ adapter, structured camera inventory

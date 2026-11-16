@@ -483,7 +483,7 @@ func TestManagedXiaomiPTZStepMapsCameraAndSessionErrors(t *testing.T) {
 	}{
 		{name: "unknown camera", stepErr: xiaomi.ErrCameraNotFound, wantStatus: http.StatusNotFound, wantError: "camera_not_found"},
 		{name: "known unsupported model", stepErr: xiaomi.ErrUnsupportedCamera, wantStatus: http.StatusBadGateway, wantError: "ptz_step_failed"},
-		{name: "unavailable session", stepErr: xiaomi.ErrCameraUnavailable, wantStatus: http.StatusServiceUnavailable, wantError: string(model.ErrorBackendUnavailable)},
+		{name: "unavailable session", stepErr: xiaomi.ErrCameraUnavailable, wantStatus: http.StatusServiceUnavailable, wantError: "ptz_session_unavailable"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			provider := &fakeManagedStepProvider{

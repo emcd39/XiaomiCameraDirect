@@ -13,7 +13,7 @@ from homeassistant.exceptions import HomeAssistantError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from custom_components.xiaomi_local_gateway.camera import GatewayCamera
-from custom_components.xiaomi_local_gateway.api import GatewayError
+from custom_components.xiaomi_local_gateway.api import GatewayError, GatewayPTZSessionUnavailable
 from custom_components.xiaomi_local_gateway.button import PTZButton
 
 
@@ -65,6 +65,35 @@ class CameraEntityTests(unittest.TestCase):
 
 
 class ColdCameraTests(unittest.IsolatedAsyncioTestCase):
+    async def test_ptz_only_prepares_after_confirmed_missing_session(self) -> None:
+        for error, expected in (
+            (None, ["step"]),
+            (GatewayPTZSessionUnavailable("No session"), ["step", "stream", "step"]),
+            (GatewayError("Request timed out"), ["step"]),
+        ):
+            with self.subTest(error=error):
+                actions = []
+
+                async def stream(camera_id):
+                    actions.append("stream")
+
+                async def step(camera_id, direction, *, managed):
+                    actions.append("step")
+                    if len(actions) == 1 and error is not None:
+                        raise error
+
+                coordinator = SimpleNamespace(
+                    data={"c201": {"on_demand_stream": True, "managed_steps": True, "ptz": True}},
+                    client=SimpleNamespace(camera_stream=stream, ptz_step=step),
+                )
+                button = PTZButton(coordinator, "c201", "left")
+                if type(error) is GatewayError:
+                    with self.assertRaises(HomeAssistantError):
+                        await button.async_press()
+                else:
+                    await button.async_press()
+                self.assertEqual(actions, expected)
+
     async def test_failed_preparation_never_sends_a_ptz_step(self) -> None:
         actions = []
 
@@ -74,6 +103,7 @@ class ColdCameraTests(unittest.IsolatedAsyncioTestCase):
 
         async def step(camera_id, direction, *, managed):
             actions.append(("step", camera_id, direction, managed))
+            raise GatewayPTZSessionUnavailable("No session")
 
         coordinator = SimpleNamespace(
             data={"c201": {"on_demand_stream": True, "managed_steps": True, "ptz": True}},
@@ -83,7 +113,7 @@ class ColdCameraTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(HomeAssistantError, "Camera stream timed out"):
             await button.async_press()
-        self.assertEqual(actions, [("stream", "c201")])
+        self.assertEqual(actions, [("step", "c201", "left", True), ("stream", "c201")])
 
 
 if __name__ == "__main__":

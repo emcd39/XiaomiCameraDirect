@@ -3,7 +3,7 @@ from __future__ import annotations
 from homeassistant.components.button import ButtonEntity
 from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
-from .api import GatewayError
+from .api import GatewayError, GatewayPTZSessionUnavailable
 from .entity import GatewayEntity
 
 DIRECTIONS = ("up", "down", "left", "right")
@@ -43,8 +43,13 @@ class PTZButton(GatewayEntity, ButtonEntity):
         managed = camera.get("managed_steps", False)
         client = self.coordinator.client
         try:
-            if managed and camera.get("on_demand_stream"):
+            try:
+                await client.ptz_step(self.did, self.direction, managed=managed)
+            except GatewayPTZSessionUnavailable:
+                if not managed or not camera.get("on_demand_stream"):
+                    raise
+                # The gateway confirms that the first attempt sent no command.
                 await client.camera_stream(self.did)
-            await client.ptz_step(self.did, self.direction, managed=managed)
+                await client.ptz_step(self.did, self.direction, managed=managed)
         except GatewayError as err:
             raise HomeAssistantError(str(err)) from err

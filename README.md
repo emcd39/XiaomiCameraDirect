@@ -11,6 +11,9 @@ The bridge can use an existing RTSP/ONVIF server such as the `xiaomi-onvif`
 patched-go2rtc pair. Managed mode uses an authorized Xiaomi account to discover
 cameras and negotiate local media for supported profiles. See the current
 [camera evidence](docs/LOCAL-CAMERA-PROGRESS.md) and [managed API](docs/API-MANAGED.md).
+The [direct Home Assistant integration plan](docs/HA-DIRECT-PLAN.md) covers
+running without the gateway, the optional Frigate export, and how both
+backends will be tested.
 
 ## Architecture
 
