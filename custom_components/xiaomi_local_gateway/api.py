@@ -23,14 +23,15 @@ class GatewayClient:
         self._session = session
         self._url = base_url.rstrip("/")
         self._token = token
+        self._include_inventory_streams = False
 
-    async def _call(self, method: str, path: str, payload: dict | None = None):
+    async def _call(self, method: str, path: str, payload: dict | None = None, *, timeout: int = 15):
         try:
             async with self._session.request(
                 method, self._url + path,
                 headers={"Authorization": f"Bearer {self._token}"},
                 json=payload,
-                timeout=ClientTimeout(total=15),
+                timeout=ClientTimeout(total=timeout),
             ) as response:
                 if response.status == 401:
                     raise GatewayUnauthorized("Gateway rejected API token")
@@ -52,10 +53,30 @@ class GatewayClient:
             raise GatewayError(f"Gateway request failed ({type(err).__name__})") from err
 
     async def cameras(self) -> list[dict]:
+        path = "/v2/cameras"
+        if not self._include_inventory_streams:
+            path += "?include_streams=false"
         try:
-            result = await self._call("GET", "/v2/cameras")
+            result = await self._call("GET", path)
+            cameras = self._parse_cameras(result)
+            on_demand = result.get("on_demand_streams") is True
+            if not self._include_inventory_streams and not on_demand and any(
+                raw["capabilities"].get("video") is True and not camera["rtsp_url"]
+                for raw, camera in zip(result["cameras"], cameras, strict=True)
+            ):
+                # Older gateways with the inventory filter have no separate
+                # readiness route. Keep their previous source lookup behavior.
+                result = await self._call("GET", "/v2/cameras")
+                cameras = self._parse_cameras(result)
+                self._include_inventory_streams = result.get("on_demand_streams") is not True
+            elif on_demand:
+                self._include_inventory_streams = False
+            return cameras
         except GatewayEndpointUnavailable:
             return await self._legacy_cameras()
+
+    @staticmethod
+    def _parse_cameras(result) -> list[dict]:
         cameras = result.get("cameras") if isinstance(result, dict) else None
         if not isinstance(cameras, list):
             raise GatewayError("Invalid camera inventory response")
@@ -75,15 +96,7 @@ class GatewayClient:
                 or not isinstance(streams, list)
             ):
                 raise GatewayError("Invalid camera inventory response")
-            source = None
-            for stream in streams:
-                if not isinstance(stream, dict):
-                    raise GatewayError("Invalid camera stream response")
-                if stream.get("protocol") == "rtsp":
-                    source = stream.get("url")
-                    if not isinstance(source, str) or not _valid_rtsp_url(source):
-                        raise GatewayError("Invalid camera stream response")
-                    break
+            source = _rtsp_stream_url(streams)
             normalized_camera = {
                 "id": camera_id,
                 "name": name,
@@ -91,6 +104,18 @@ class GatewayClient:
                 "rtsp_url": source,
                 "ptz": capabilities["ptz"],
             }
+            if result.get("on_demand_streams") is True and capabilities.get("video") is True:
+                normalized_camera["on_demand_stream"] = True
+            if result.get("managed_steps") is True and capabilities["ptz"]:
+                normalized_camera["managed_steps"] = True
+            video = camera.get("video")
+            if isinstance(video, dict) and video.get("state") == "streaming":
+                source_format = video.get("source_format")
+                if isinstance(source_format, dict) and source_format.get("codec") in ("H264", "H265"):
+                    normalized_camera["source_codec"] = source_format["codec"]
+                    width, height = source_format.get("width"), source_format.get("height")
+                    if type(width) is int and type(height) is int and width > 0 and height > 0:
+                        normalized_camera["source_resolution"] = f"{width}×{height}"
             support = _parse_camera_support(camera.get("support"))
             if support is not None:
                 normalized_camera["support"] = support
@@ -134,16 +159,62 @@ class GatewayClient:
             "properties": normalized,
         }
 
-    async def supports_camera_settings(self) -> bool:
-        """Check the managed API feature flag before scheduling settings polls."""
+    async def camera_storage(self, camera_id: str) -> dict:
+        result = await self._call(
+            "GET", f"/v2/cameras/{quote(camera_id, safe='')}/storage"
+        )
+        properties = result.get("properties") if isinstance(result, dict) else None
+        observed_at = result.get("observed_at") if isinstance(result, dict) else None
+        if not isinstance(observed_at, str) or not isinstance(properties, dict):
+            raise GatewayError("Invalid camera storage response")
+        normalized = {}
+        property_maximums = {
+            "card_status": 100,
+            "total": 1 << 31,
+            "free": 1 << 31,
+            "used": 1 << 31,
+        }
+        for name, item in properties.items():
+            value = item.get("value") if isinstance(item, dict) else None
+            if (
+                name not in property_maximums
+                or not isinstance(item, dict)
+                or type(item.get("code")) is not int
+                or (
+                    value is not None
+                    and (type(value) is not int or value < 0 or value > property_maximums[name])
+                )
+                or "unit" not in item
+                or item["unit"] is not None
+            ):
+                raise GatewayError("Invalid camera storage response")
+            normalized[name] = {
+                "code": item["code"],
+                "value": value,
+                "unit": None,
+            }
+        return {"observed_at": observed_at, "properties": normalized}
+
+    async def camera_read_capabilities(self) -> set[str]:
+        """Return the optional read-only feature flags advertised by a gateway."""
         try:
             result = await self._call("GET", "/v2/info")
         except GatewayEndpointUnavailable:
-            return False
+            return set()
         if not isinstance(result, dict):
-            return False
+            return set()
         features = result.get("features")
-        return isinstance(features, list) and "camera_settings_read" in features
+        if not isinstance(features, list) or any(not isinstance(feature, str) for feature in features):
+            return set()
+        return {feature for feature in features if feature in {"camera_settings_read", "sd_capacity"}}
+
+    async def supports_camera_settings(self) -> bool:
+        """Check the managed API feature flag before scheduling settings polls."""
+        return "camera_settings_read" in await self.camera_read_capabilities()
+
+    async def supports_camera_storage(self) -> bool:
+        """Check the feature flag before polling the storage endpoint."""
+        return "sd_capacity" in await self.camera_read_capabilities()
 
     async def _legacy_cameras(self) -> list[dict]:
         result = await self._call("GET", "/v1/cameras")
@@ -160,8 +231,21 @@ class GatewayClient:
             raise GatewayError("Invalid camera inventory response")
         return cameras
 
-    async def ptz_step(self, camera_id: str, direction: str) -> None:
-        await self._call("POST", f"/v1/cameras/{camera_id}/ptz/step", {"direction": direction})
+    async def camera_stream(self, camera_id: str) -> str:
+        result = await self._call("GET", f"/v2/cameras/{quote(camera_id, safe='')}/stream", timeout=18)
+        streams = result.get("streams") if isinstance(result, dict) else None
+        source = _rtsp_stream_url(streams)
+        if source is None:
+            raise GatewayError("Gateway did not return a ready RTSP source")
+        return source
+
+    async def ptz_step(self, camera_id: str, direction: str, *, managed: bool = False) -> None:
+        version = "v2" if managed else "v1"
+        result = await self._call(
+            "POST", f"/{version}/cameras/{quote(camera_id, safe='')}/ptz/step", {"direction": direction}
+        )
+        if managed and (not isinstance(result, dict) or result.get("write_status") != "sent"):
+            raise GatewayError("Gateway did not confirm the PTZ step")
 
     async def ptz_stop(self, camera_id: str) -> None:
         await self._call("POST", f"/v1/cameras/{camera_id}/ptz/stop", {})
@@ -186,6 +270,20 @@ class GatewayClient:
             raise
         except (ClientResponseError, ClientError, TimeoutError, ValueError) as err:
             raise GatewayError(f"Gateway snapshot request failed ({type(err).__name__})") from err
+
+
+def _rtsp_stream_url(streams) -> str | None:
+    if not isinstance(streams, list):
+        raise GatewayError("Invalid camera stream response")
+    for stream in streams:
+        if not isinstance(stream, dict):
+            raise GatewayError("Invalid camera stream response")
+        if stream.get("protocol") == "rtsp":
+            source = stream.get("url")
+            if not isinstance(source, str) or not _valid_rtsp_url(source):
+                raise GatewayError("Invalid camera stream response")
+            return source
+    return None
 
 
 def _valid_rtsp_url(value: str) -> bool:

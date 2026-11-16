@@ -135,8 +135,8 @@ func readState(path string) (State, error) {
 	if !info.Mode().IsRegular() {
 		return State{}, fmt.Errorf("%w: state path is not a regular file", ErrCorruptState)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return State{}, ErrInsecureState
+	if err := checkStatePermissions(path, info); err != nil {
+		return State{}, err
 	}
 	if info.Size() > maxStateFileBytes {
 		return State{}, ErrStateTooLarge
@@ -203,6 +203,9 @@ func writeState(path string, state State) error {
 	}
 	if err := temp.Close(); err != nil {
 		return fmt.Errorf("close managed state: %w", err)
+	}
+	if err := secureStateFile(tempPath); err != nil {
+		return fmt.Errorf("secure managed state file: %w", err)
 	}
 	if err := os.Rename(tempPath, path); err != nil {
 		return fmt.Errorf("replace managed state: %w", err)

@@ -1,6 +1,6 @@
 # C201 SD card discovery: read-only provider proposal
 
-Status: design only. No C201 storage-channel probe or recording download was performed.
+Status: F05 read-only MIoT status/capacity is implemented in the gateway and Home Assistant integration. Go and HA 2026.10.4 headless tests passed, and a physical C201 returned all four properties. Their units and meaning remain unverified. F06 recording index and F07 clip fetch remain design only. No C201 storage-channel probe, index listing, or recording download was performed.
 
 ## Evidence and limits
 
@@ -19,7 +19,7 @@ The local Xiaomi Viewer communication record contains a successful property batc
 
 Xiaomi's product specification advertises MicroSD support from 8 GB to 256 GB. This is a supported range, not the installed card's size or capacity.
 
-The Gateway account code already has a context-aware read operation, Account.MiotGetContext, backed by /miotspec/prop/get. The Xiaomi provider/API does not currently expose this operation for storage. Do not use MiotSet or MIoT actions for this feature.
+The Gateway account code has a context-aware read operation, Account.MiotGetContext, backed by /miotspec/prop/get. F05 now exposes only the fixed C201 storage-property allowlist through the Xiaomi provider and authenticated API. F06 has no RDT index provider/API yet. Do not use MiotSet or MIoT actions for this feature.
 
 The C201 pilot plan reports model xiaomi.camera.c201 and firmware 5.3.2_0016. The media request's channel field is separate from a storage channel. The provider passes Channel 0 to the live media stream; do not reuse it for RDT. Protocol notes mention storage channels 0 and 10 for CW500, not C201. No local C201 RDT index capture or fixture establishes its storage channel.
 
@@ -27,17 +27,34 @@ The C201 pilot plan reports model xiaomi.camera.c201 and firmware 5.3.2_0016. Th
 
 | Function | Confirmed for the recorded C201 session | Existing code can do | Still unknown |
 |---|---|---|---|
-| Card status and capacity | Readable MIoT properties SIID 3 / PIID 1–4 exist. The 2026-11-06 record has code-0 results: status 1, total/free/used 0; firmware read in the same sequence is 5.3.2_0016. | Account.MiotGetContext can read properties, but no storage provider/API wraps it. | Units, meaning of Status 1, meaning of zero space values, current card presence, and actual total/free capacity. Preserve raw values and do not infer absence or bytes. |
+| Card status and capacity | Readable MIoT properties SIID 3 / PIID 1–4 exist. The 2026-11-06 record has code-0 results: status 1, total/free/used 0; firmware read in the same sequence is 5.3.2_0016. | Implemented as authenticated `GET /v2/cameras/{id}/storage`, restricted to exact model `xiaomi.camera.c201`; values/codes stay raw and units stay unknown. Go and HA 2026.10.4 headless tests passed. | Units, meaning of Status 1, meaning of zero space values, current card presence, and actual total/free capacity. Preserve raw values and do not infer absence or bytes. |
 | Read-only recording listing | No C201 RDT index response or storage-channel mapping was found. | Session.Recordings(channel) sends RDT IndexCommand 6 and returns sorted clip starts, durations, and event flags. It is not wired into the provider/API. | The C201 storage channel and the valid wire representation of an empty index. |
 | Selecting and reading a clip | No C201 clip was fetched or played through this path. | Session.FetchRecording(start, channel) accepts the exact index start; FileRequest now encodes a long payload carrying the timestamp and channel. | Whether C201 accepts the request and returns the file on a verified channel; whether the C201 channel has been verified. |
 
-## Proposed provider and API
+## F05 implementation and F06/F07 proposal
 
-Add an optional CameraStorageProvider boundary rather than coupling HTTP handlers to Xiaomi protocol types. It should provide a raw storage-property snapshot, a recording index, and a recording fetch for a stable camera ID. The Xiaomi provider must reject models other than xiaomi.camera.c201 before any storage call. Use the provider's private device ID and the existing Account.MiotGetContext with only SIID 3 / PIIDs 1–4. Never accept a client-supplied device ID, SIID, PIID, or RDT channel.
+The optional `CameraStorageProvider` boundary is implemented so HTTP handlers do not depend on Xiaomi protocol types. F05 provides a raw storage-property snapshot for a stable camera ID. The Xiaomi provider rejects models other than `xiaomi.camera.c201` before any storage read, uses its private device ID and existing `Account.MiotGetContext`, and allows only SIID 3 / PIIDs 1–4. The RDT index and recording-fetch provider operations remain unimplemented. Never accept a client-supplied device ID, SIID, PIID, or RDT channel.
 
-Proposed read-only routes:
+F05 current response shape:
 
-- GET /v2/cameras/{id}/storage reads the four MIoT properties and returns raw values plus unit=null and status_interpretation=unknown until their units and meanings are sourced. A nonzero response code or missing property remains unknown; zero is not silently translated to no card.
+`GET /v2/cameras/{id}/storage` is authenticated and reads the four MIoT properties. The response contains `observed_at` and a `properties` map; each returned property has `code`, optional/raw `value`, and `unit: null`. There is no `status_interpretation` field and no converted capacity field. For example:
+
+```json
+{
+  "observed_at": "<RFC3339 timestamp>",
+  "properties": {
+    "card_status": {"code": 0, "value": 1, "unit": null},
+    "total": {"code": 0, "value": 0, "unit": null},
+    "free": {"code": 0, "value": 0, "unit": null},
+    "used": {"code": 0, "value": 0, "unit": null}
+  }
+}
+```
+
+This is an illustrative response shape with historical property values; the timestamp is a placeholder, not a captured current response. A nonzero per-property code omits its value; a missing property stays absent. Neither case is translated into “no card”, and zero is not converted to bytes. The route is advertised with `sd_capacity` only when the storage provider is available.
+
+Proposed F06/F07 read-only routes:
+
 - GET /v2/cameras/{id}/storage/recordings returns index state and clips with exact start epoch seconds, duration seconds, and event flag. Capacity remains unknown unless a property with documented units supplies it.
 - GET /v2/cameras/{id}/storage/recordings/{start}/download accepts only an exact start returned by the current index for that camera. It must not round timestamps or accept arbitrary points within a clip. Reject stale or absent starts before calling FetchRecording.
 
@@ -76,7 +93,7 @@ The FileRequest(timestamp, channel) builder now creates a 24-byte payload, write
 8. MIoT read failure: nonzero per-property code, omitted property, or canceled request remains unknown/error and does not trigger a write, retry, or MIoT action.
 9. Capacity without an explicit unit: assert null/unknown converted capacity regardless of values or number of clips.
 
-The generic FileRequest builder now emits a 24-byte payload with the timestamp in bytes 0–3 and the little-endian channel in bytes 8–11. `internal/xiaomi/protocol/recordings/recordings_test.go` covers those bytes with a nonzero channel; it passed on 2026-11-12 with `C:\Apps\go\bin\go.exe test ./internal/xiaomi/protocol/recordings -count=1` (Go 1.27.3, windows/amd64). This verifies the generic payload layout only; it does not prove that C201 firmware 5.3.2_0016 accepts the extended request. No C201 storage endpoint or live RDT probe is implied by this proposal.
+The generic FileRequest builder now emits a 24-byte payload with the timestamp in bytes 0–3 and the little-endian channel in bytes 8–11. `internal/xiaomi/protocol/recordings/recordings_test.go` covers those bytes with a nonzero channel; it passed on 2026-11-12 with `C:\Apps\go\bin\go.exe test ./internal/xiaomi/protocol/recordings -count=1` (Go 1.27.3, windows/amd64). This verifies the generic payload layout only; it does not prove that C201 firmware 5.3.2_0016 accepts the extended request. The implemented F05 storage-properties endpoint does not imply an F06 RDT index endpoint or a live RDT probe.
 
 ## Reviewed local sources
 

@@ -168,6 +168,8 @@ async def test_late_settings_capability(session, token: str) -> None:
     state = {
         "info_calls": 0,
         "settings_calls": 0,
+        "inventory_queries": [],
+        "action_calls": [],
         "feature_enabled": False,
         "properties": {
             "night_shot": {"code": 0, "value": 2},
@@ -185,12 +187,12 @@ async def test_late_settings_capability(session, token: str) -> None:
     async def cameras(request):
         if not authorized(request):
             return web.json_response({"error": "unauthorized"}, status=401)
-        return web.json_response({"cameras": [{
+        state["inventory_queries"].append(request.query.get("include_streams"))
+        return web.json_response({"on_demand_streams": True, "managed_steps": True, "cameras": [{
             "id": "late_c201",
             "name": "Late C201",
             "model": "xiaomi.camera.c201",
             "capabilities": {"video": True, "ptz": True},
-            "streams": [{"id": "main", "protocol": "rtsp", "url": "rtsp://127.0.0.1:8554/late-c201"}],
             "support": {
                 "schema_version": 1,
                 "features": {
@@ -206,6 +208,23 @@ async def test_late_settings_capability(session, token: str) -> None:
                 },
             },
         }]})
+
+    async def stream(request):
+        if not authorized(request):
+            return web.json_response({"error": "unauthorized"}, status=401)
+        state["action_calls"].append(("prepare", request.match_info["camera_id"]))
+        await asyncio.sleep(0.15)
+        state["action_calls"].append(("ready", request.match_info["camera_id"]))
+        return web.json_response({"streams": [
+            {"id": "main", "protocol": "rtsp", "url": "rtsp://127.0.0.1:8554/late-c201"}
+        ]})
+
+    async def ptz(request):
+        if not authorized(request):
+            return web.json_response({"error": "unauthorized"}, status=401)
+        body = await request.json()
+        state["action_calls"].append(("step", request.match_info["camera_id"], body.get("direction")))
+        return web.json_response({"write_status": "sent"})
 
     async def info(request):
         if not authorized(request):
@@ -231,6 +250,8 @@ async def test_late_settings_capability(session, token: str) -> None:
     app.router.add_get("/v2/cameras", cameras)
     app.router.add_get("/v2/info", info)
     app.router.add_get("/v2/cameras/{camera_id}/settings", settings)
+    app.router.add_get("/v2/cameras/{camera_id}/stream", stream)
+    app.router.add_post("/v2/cameras/{camera_id}/ptz/step", ptz)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", 0)
@@ -284,6 +305,19 @@ async def test_late_settings_capability(session, token: str) -> None:
         loaded_entry = await wait_for_condition(entry_is_loaded)
         if loaded_entry.get("state") != "loaded":
             raise RuntimeError("The C201 config entry was not loaded after the initial info failure")
+        if not state["inventory_queries"] or any(value != "false" for value in state["inventory_queries"]) or state["action_calls"]:
+            raise RuntimeError(
+                "Camera setup violated metadata-only inventory: "
+                f"inventory_queries={state['inventory_queries']!r}, "
+                f"action_calls={state['action_calls']!r}"
+            )
+        await api(session, token, "POST", "/api/services/button/press", {"entity_id": "button.late_c201_ptz_left"})
+        if state["action_calls"] != [
+            ("prepare", "late_c201"), ("ready", "late_c201"), ("step", "late_c201", "left")
+        ]:
+            raise RuntimeError(f"Unexpected cold PTZ calls: {state['action_calls']}")
+        print(json.dumps({"phase": "on_demand_cold_ptz", "idle_media_requests": 0,
+                          "action_calls": state["action_calls"], "result": "ok"}))
 
         # The real config-entry setup has returned and camera/PTZ entities exist.
         state["feature_enabled"] = True

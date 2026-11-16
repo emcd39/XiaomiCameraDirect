@@ -27,6 +27,7 @@ from test_ha import (
 
 TOKEN_CACHE = "/config/.xlg-c201-e2e-token.json"
 RESULT_CACHE = "/config/.xlg-c201-e2e-result.json"
+_stream_monotonic = time.monotonic
 
 
 def report_result(payload: dict[str, object]) -> None:
@@ -161,7 +162,7 @@ async def gateway_preflight(session: aiohttp.ClientSession) -> None:
         raise RuntimeError(f"Linux gateway health check returned HTTP {health_status}")
 
     async with session.get(
-        GATEWAY_URL.rstrip("/") + "/v2/cameras",
+        GATEWAY_URL.rstrip("/") + "/v2/cameras?include_streams=false",
         headers={"Authorization": f"Bearer {TOKEN}"},
         timeout=aiohttp.ClientTimeout(total=45),
     ) as response:
@@ -302,40 +303,72 @@ async def camera_stream_url(session: aiohttp.ClientSession, token: str, entity_i
             return f"{BASE}{parsed.path}{query}"
 
 
-async def stream_seconds(session: aiohttp.ClientSession, token: str, entity_id: str, seconds: int) -> dict[str, int]:
+async def stream_seconds(
+    session: aiohttp.ClientSession, token: str, entity_id: str, seconds: int
+) -> dict[str, int | str | list[str] | None]:
+    started_at = _stream_monotonic()
+    returncode: int | None = None
+    stdout: bytes | str = b""
+    failures: list[str] = []
+    timed_out = False
     executable = shutil.which("ffmpeg")
     if not executable:
-        raise RuntimeError("FFmpeg is not available in the Home Assistant container")
-    stream_url = await camera_stream_url(session, token, entity_id)
-    command = [
-        executable, "-nostdin", "-hide_banner", "-loglevel", "error",
-        "-i", stream_url, "-t", str(seconds), "-an", "-progress", "pipe:1", "-f", "null", "-",
-    ]
-    started_at = time.monotonic()
-    result = await asyncio.to_thread(
-        subprocess.run,
-        command,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        timeout=seconds + 60,
-        check=False,
-    )
-    wall_seconds = time.monotonic() - started_at
-    if result.returncode != 0:
-        raise RuntimeError("FFmpeg could not decode the C201 Home Assistant HLS stream")
+        failures.append("ffmpeg_unavailable")
+    else:
+        try:
+            stream_url = await camera_stream_url(session, token, entity_id)
+            command = [
+                executable, "-nostdin", "-hide_banner", "-loglevel", "error",
+                "-i", stream_url, "-t", str(seconds), "-an", "-progress", "pipe:1", "-f", "null", "-",
+            ]
+            result = await asyncio.to_thread(
+                subprocess.run,
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=seconds + 60,
+                check=False,
+            )
+            returncode = result.returncode
+            stdout = result.stdout or b""
+        except subprocess.TimeoutExpired as error:
+            timed_out = True
+            stdout = error.stdout or b""
+        except Exception:
+            # Exception text may contain the signed HLS URL; emit only a safe reason code.
+            failures.append("hls_source_or_ffmpeg_error")
+    wall_seconds = _stream_monotonic() - started_at
+    if isinstance(stdout, str):
+        stdout = stdout.encode("ascii", errors="ignore")
     progress = {}
-    for line in result.stdout.decode("ascii", errors="ignore").splitlines():
+    for line in stdout.decode("ascii", errors="ignore").splitlines():
         if "=" in line:
             key, value = line.split("=", 1)
             if key in {"frame", "out_time_ms"} and value.isdigit():
                 progress[key] = int(value)
     decoded_seconds = progress.get("out_time_ms", 0) / 1_000_000
-    if progress.get("frame", 0) < 1:
-        raise RuntimeError("Home Assistant HLS run completed without decoding a C201 frame")
-    if decoded_seconds < max(1, seconds - 2) or wall_seconds < max(1, seconds - 5):
-        raise RuntimeError("Home Assistant HLS run ended before the requested decoded and wall-clock duration")
-    return {"frame": progress["frame"], "decoded_seconds": int(decoded_seconds), "wall_seconds": int(wall_seconds)}
+    frame_count = progress.get("frame", 0)
+    if timed_out:
+        failures.append("ffmpeg_timeout")
+    elif returncode is not None and returncode != 0:
+        failures.append("ffmpeg_nonzero_exit")
+    if returncode == 0 and frame_count < 1:
+        failures.append("no_decoded_frames")
+    if decoded_seconds < max(1, seconds - 2):
+        failures.append("decoded_duration_below_threshold")
+    if wall_seconds < max(1, seconds - 5):
+        failures.append("wall_duration_below_threshold")
+    return {
+        "entity_id": entity_id,
+        "requested_seconds": seconds,
+        "frame": frame_count,
+        "decoded_seconds": int(decoded_seconds),
+        "wall_seconds": int(wall_seconds),
+        "ffmpeg_returncode": returncode,
+        "result": "failed" if failures else "ok",
+        "failures": failures,
+    }
 
 
 async def direct_rtsp_seconds(session: aiohttp.ClientSession, seconds: int) -> dict[str, int]:
@@ -343,7 +376,7 @@ async def direct_rtsp_seconds(session: aiohttp.ClientSession, seconds: int) -> d
     if not executable:
         raise RuntimeError("FFmpeg is not available in the Home Assistant container")
     body = None
-    for inventory_path in ("/v2/cameras", "/v1/cameras"):
+    for inventory_path in ("/v2/cameras?include_streams=false", "/v1/cameras"):
         async with session.get(
             GATEWAY_URL.rstrip("/") + inventory_path,
             headers={"Authorization": f"Bearer {TOKEN}"},
@@ -365,17 +398,35 @@ async def direct_rtsp_seconds(session: aiohttp.ClientSession, seconds: int) -> d
     cameras = body.get("cameras") if isinstance(body, dict) else None
     if not isinstance(cameras, list):
         raise RuntimeError("Gateway returned an invalid managed camera inventory")
-    sources: list[str] = []
-    for camera in cameras:
-        if camera.get("model_id", camera.get("model")) == "xiaomi.camera.c201":
-            legacy_source = camera.get("rtsp_url")
-            if isinstance(legacy_source, str):
-                sources.append(legacy_source)
-            for stream in camera.get("streams", []):
-                if stream.get("protocol") == "rtsp":
-                    source_url = stream.get("url")
-                    if isinstance(source_url, str):
-                        sources.append(source_url)
+    matching = [camera for camera in cameras
+                if camera.get("model_id", camera.get("model")) == "xiaomi.camera.c201"]
+    if len(matching) != 1 or not isinstance(matching[0].get("id"), str):
+        raise RuntimeError("Gateway inventory did not identify exactly one C201")
+    camera = matching[0]
+    ready_source = body.get("on_demand_streams") is True
+    if ready_source:
+        path = f"/v2/cameras/{quote(camera['id'], safe='')}/stream"
+    elif inventory_path.startswith("/v2/"):
+        path = f"/v2/cameras?streams_for={quote(camera['id'], safe='')}"
+    else:
+        path = None
+    if path is not None:
+        async with session.get(
+            GATEWAY_URL.rstrip("/") + path,
+            headers={"Authorization": f"Bearer {TOKEN}"},
+            timeout=aiohttp.ClientTimeout(total=24),
+        ) as response:
+            if response.status != 200:
+                raise RuntimeError(f"C201 gateway source request returned HTTP {response.status}")
+            result = await response.json()
+        if ready_source:
+            camera = result
+        else:
+            camera = next((row for row in result.get("cameras", []) if row.get("id") == camera["id"]), {})
+    sources = [stream["url"] for stream in camera.get("streams", [])
+               if stream.get("protocol") == "rtsp" and isinstance(stream.get("url"), str)]
+    if isinstance(camera.get("rtsp_url"), str):
+        sources.append(camera["rtsp_url"])
     if len(sources) != 1:
         raise RuntimeError("Gateway did not provide exactly one C201 RTSP source")
     source = sources[0]
@@ -403,6 +454,8 @@ async def direct_rtsp_seconds(session: aiohttp.ClientSession, seconds: int) -> d
                 check=False,
             )
         except subprocess.TimeoutExpired:
+            if ready_source:
+                break
             await asyncio.sleep(1)
             continue
         wall_seconds = time.monotonic() - started_at
@@ -425,6 +478,8 @@ async def direct_rtsp_seconds(session: aiohttp.ClientSession, seconds: int) -> d
                 "wall_seconds": int(wall_seconds),
                 "attempts": attempts,
             }
+        if ready_source:
+            break
         await asyncio.sleep(1)
     raise RuntimeError("Direct gateway RTSP diagnostic did not decode C201 media during the startup window")
 
@@ -466,7 +521,9 @@ async def run(mode: str, seconds: int) -> None:
             report_result({"phase": "ha_camera_proxy", "model_id": "xiaomi.camera.c201", "jpeg_bytes": jpeg_bytes, "result": "ok"})
         if mode in {"stream", "verify"}:
             progress = await stream_seconds(session, token, entity_id, seconds)
-            report_result({"phase": "ha_live_hls", "model_id": "xiaomi.camera.c201", "duration_seconds": seconds, "decoded_seconds": progress["decoded_seconds"], "wall_seconds": progress["wall_seconds"], "decoded_frames": progress["frame"], "result": "ok"})
+            report_result({"phase": "ha_live_hls", "model_id": "xiaomi.camera.c201", **progress})
+            if progress["result"] != "ok":
+                raise RuntimeError("C201 Home Assistant HLS validation failed; see sanitized result above")
         if mode == "direct-rtsp":
             progress = await direct_rtsp_seconds(session, seconds)
             report_result({"phase": "direct_gateway_rtsp_diagnostic", "model_id": "xiaomi.camera.c201", "duration_seconds": seconds, "decoded_seconds": progress["decoded_seconds"], "wall_seconds": progress["wall_seconds"], "decoded_frames": progress["frame"], "result": "ok"})

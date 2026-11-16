@@ -50,3 +50,8 @@ func (p *ConfigProvider) Streams(_ context.Context, id model.CameraID) ([]Stream
 	}
 	return nil, nil
 }
+
+// A configured RTSP source needs no session preparation by the gateway.
+func (p *ConfigProvider) ReadyStreams(ctx context.Context, id model.CameraID) ([]StreamEndpoint, error) {
+	return p.Streams(ctx, id)
+}

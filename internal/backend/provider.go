@@ -53,6 +53,11 @@ type StreamProvider interface {
 	Streams(context.Context, model.CameraID) ([]StreamEndpoint, error)
 }
 
+// ReadyStreamProvider waits for a usable RTSP source on explicit demand.
+type ReadyStreamProvider interface {
+	ReadyStreams(context.Context, model.CameraID) ([]StreamEndpoint, error)
+}
+
 // SnapshotProvider returns one decoded JPEG for the Home Assistant camera
 // image endpoint. A provider can omit snapshots while still supporting RTSP.
 type SnapshotProvider interface {
@@ -77,6 +82,27 @@ type CameraSettings struct {
 // CameraSettingsProvider reads a fixed set of model-specific properties.
 type CameraSettingsProvider interface {
 	CameraSettings(context.Context, model.CameraID) (CameraSettings, error)
+}
+
+// StoragePropertyValue is a read-only MIoT result for camera storage. Unit is
+// deliberately nullable: until a model and firmware's units are verified, the
+// API must not imply bytes, percent, or another interpretation.
+type StoragePropertyValue struct {
+	Code  int             `json:"code"`
+	Value json.RawMessage `json:"value,omitempty"`
+	Unit  *string         `json:"unit"`
+}
+
+// CameraStorageSnapshot is a raw, model-allowlisted SD status/capacity read.
+// Missing properties remain absent and non-zero MIoT codes remain visible.
+type CameraStorageSnapshot struct {
+	ObservedAt time.Time                       `json:"observed_at"`
+	Properties map[string]StoragePropertyValue `json:"properties"`
+}
+
+// CameraStorageProvider reads a fixed set of model-specific storage properties.
+type CameraStorageProvider interface {
+	CameraStorage(context.Context, model.CameraID) (CameraStorageSnapshot, error)
 }
 
 // CameraSessionDiagnostics is a metadata-only snapshot of an already-owned

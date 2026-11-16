@@ -2,6 +2,7 @@ package xiaomi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -102,6 +103,19 @@ func TestCameraIDDoesNotExposeXiaomiDeviceID(t *testing.T) {
 	}
 }
 
+func TestSafeCameraProfileIDIsAllowlisted(t *testing.T) {
+	for _, profileID := range []string{profiles.C201ID, profiles.C400TestID, profiles.Mi360TestID, profiles.AW300TestID} {
+		if got := safeCameraProfileID(profileID); got != profileID {
+			t.Fatalf("safeCameraProfileID(%q) = %q", profileID, got)
+		}
+	}
+	for _, untrusted := range []string{"unknown", "model\nerror token=secret", "../../c201"} {
+		if got := safeCameraProfileID(untrusted); got != "unknown" {
+			t.Fatalf("safeCameraProfileID(%q) = %q, want unknown", untrusted, got)
+		}
+	}
+}
+
 func TestMediaTransportPreferenceMapsCS2VendorToNegotiation(t *testing.T) {
 	transport, ok := mediaTransportPreference("cs2")
 	if !ok || transport != "" {
@@ -127,6 +141,108 @@ func TestSameCameraSourceIdentityIncludesCurrentEndpoint(t *testing.T) {
 	}
 }
 
+func TestCameraSettingsAcceptsUnwrappedCloudPropertyList(t *testing.T) {
+	const did = "test-c201-did"
+	p := &Provider{
+		cfg:     Config{Region: "de"},
+		devices: []*cloud.Device{{Did: did, Model: profiles.ModelC201}},
+		loaded:  time.Now().UTC(),
+		miotGetContext: func(_ context.Context, _ string, _ []cloud.MiotProp) (json.RawMessage, error) {
+			return json.RawMessage(`[{"siid":2,"piid":3,"code":0,"value":2},{"siid":4,"piid":1,"code":0,"value":true}]`), nil
+		},
+	}
+	got, err := p.CameraSettings(context.Background(), cameraID(did))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.Properties["night_shot"].Value) != "2" || string(got.Properties["indicator_light"].Value) != "true" {
+		t.Fatalf("settings were not read from the cloud property list: %#v", got.Properties)
+	}
+}
+
+func TestCameraStorageReadsOnlyC201PropertiesAndPreservesUnknownUnits(t *testing.T) {
+	const did = "test-c201-did"
+	var calls int
+	var requestedDID string
+	var requested []cloud.MiotProp
+	p := &Provider{
+		cfg:             Config{Region: "de"},
+		profileRegistry: profiles.DefaultRegistry(),
+		devices:         []*cloud.Device{{Did: did, Model: profiles.ModelC201}},
+		loaded:          time.Now().UTC(),
+		miotGetContext: func(_ context.Context, gotDID string, props []cloud.MiotProp) (json.RawMessage, error) {
+			calls++
+			requestedDID = gotDID
+			requested = append([]cloud.MiotProp(nil), props...)
+			return json.RawMessage(`[{"siid":3,"piid":1,"code":0,"value":1},{"siid":3,"piid":2,"code":0,"value":0},{"siid":3,"piid":3,"code":-704040003,"value":1234},{"siid":3,"piid":4,"code":0,"value":2147483648}]`), nil
+		},
+	}
+
+	got, err := p.CameraStorage(context.Background(), cameraID(did))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || requestedDID != did || len(requested) != 4 {
+		t.Fatalf("MIoT calls=%d did=%q properties=%#v", calls, requestedDID, requested)
+	}
+	for index, property := range requested {
+		if property.Siid != 3 || property.Piid != index+1 {
+			t.Fatalf("requested property %d = %#v", index, property)
+		}
+	}
+	if got.ObservedAt.IsZero() || string(got.Properties["card_status"].Value) != "1" || got.Properties["card_status"].Unit != nil {
+		t.Fatalf("card status must remain raw with unknown unit: %#v", got)
+	}
+	if string(got.Properties["total"].Value) != "0" || got.Properties["total"].Unit != nil {
+		t.Fatalf("zero total must remain raw and must not imply card absence or bytes: %#v", got.Properties["total"])
+	}
+	if got.Properties["free"].Code != -704040003 || len(got.Properties["free"].Value) != 0 || got.Properties["free"].Unit != nil {
+		t.Fatalf("nonzero MIoT result was not preserved safely: %#v", got.Properties["free"])
+	}
+	if string(got.Properties["used"].Value) != "2147483648" {
+		t.Fatalf("maximum documented capacity value = %s", got.Properties["used"].Value)
+	}
+}
+
+func TestC201StorageSupportEvidenceUsesExistingReportAnchor(t *testing.T) {
+	const want = "xiaomi-diagnostic-console/docs/TEST_REPORT.md#c201-sd-evidence"
+	feature, ok := c201SupportEvidence().Features["sd_capacity"]
+	if !ok || feature.EvidenceRef != want {
+		t.Fatalf("SD evidence reference = %#v, want %q", feature, want)
+	}
+	report, err := os.ReadFile("../../xiaomi-diagnostic-console/docs/TEST_REPORT.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(report), `<a id="c201-sd-evidence"></a>`) {
+		t.Fatalf("report does not define evidence anchor %q", want)
+	}
+}
+
+func TestParseC201StoragePropertiesKeepsMissingPropertiesUnknownAndRejectsBadValues(t *testing.T) {
+	values, err := parseC201StorageProperties(json.RawMessage(`{"result":[]}`))
+	if err != nil || len(values) != 0 {
+		t.Fatalf("empty valid response = %#v, %v", values, err)
+	}
+
+	for name, raw := range map[string]string{
+		"missing result":    `{}`,
+		"null result":       `{"result":null}`,
+		"missing code":      `{"result":[{"siid":3,"piid":1,"value":1}]}`,
+		"duplicate":         `{"result":[{"siid":3,"piid":1,"code":0,"value":1},{"siid":3,"piid":1,"code":0,"value":1}]}`,
+		"status over max":   `{"result":[{"siid":3,"piid":1,"code":0,"value":101}]}`,
+		"negative":          `{"result":[{"siid":3,"piid":2,"code":0,"value":-1}]}`,
+		"fraction":          `{"result":[{"siid":3,"piid":2,"code":0,"value":1.5}]}`,
+		"capacity overflow": `{"result":[{"siid":3,"piid":4,"code":0,"value":2147483649}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseC201StorageProperties(json.RawMessage(raw)); !errors.Is(err, ErrInvalidCameraStorage) {
+				t.Fatalf("parse invalid response error = %v", err)
+			}
+		})
+	}
+}
+
 type fakeDeviceInventory struct {
 	mu           sync.Mutex
 	devices      []*cloud.Device
@@ -142,7 +258,7 @@ type fakeDeviceInventoryReply struct {
 	release <-chan struct{}
 }
 
-func (f *fakeDeviceInventory) Devices() ([]*cloud.Device, error) {
+func (f *fakeDeviceInventory) DevicesContext(context.Context) ([]*cloud.Device, error) {
 	f.mu.Lock()
 	f.calls++
 	call := f.calls
@@ -175,6 +291,85 @@ func (f *fakeDeviceInventory) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls
+}
+
+type profiledFakeDeviceInventory struct {
+	devices       []*cloud.Device
+	standardCalls int
+	profileCalls  int
+	modelIDs      []string
+}
+
+func (f *profiledFakeDeviceInventory) DevicesContext(context.Context) ([]*cloud.Device, error) {
+	f.standardCalls++
+	var result []*cloud.Device
+	for _, device := range f.devices {
+		if device != nil && device.IsCamera() {
+			result = append(result, device)
+		}
+	}
+	return result, nil
+}
+
+func (f *profiledFakeDeviceInventory) DevicesWithCameraModelsContext(_ context.Context, modelIDs []string) ([]*cloud.Device, error) {
+	f.profileCalls++
+	f.modelIDs = append([]string(nil), modelIDs...)
+	allowed := make(map[string]struct{}, len(modelIDs))
+	for _, id := range modelIDs {
+		allowed[id] = struct{}{}
+	}
+	var result []*cloud.Device
+	for _, device := range f.devices {
+		if device == nil {
+			continue
+		}
+		if _, ok := allowed[device.Model]; device.IsCamera() || ok {
+			result = append(result, device)
+		}
+	}
+	return result, nil
+}
+
+type contextInventoryFunc func(context.Context) ([]*cloud.Device, error)
+
+func (f contextInventoryFunc) DevicesContext(ctx context.Context) ([]*cloud.Device, error) {
+	return f(ctx)
+}
+
+func TestProviderInventoryCancelsCloudRefreshWithCaller(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan context.Context, 1)
+	done := make(chan error, 1)
+	provider := &Provider{
+		deviceInventory: contextInventoryFunc(func(requestCtx context.Context) ([]*cloud.Device, error) {
+			started <- requestCtx
+			<-requestCtx.Done()
+			return nil, requestCtx.Err()
+		}),
+	}
+	go func() {
+		_, err := provider.Cameras(ctx)
+		done <- err
+	}()
+	select {
+	case requestCtx := <-started:
+		deadline, ok := requestCtx.Deadline()
+		if !ok || time.Until(deadline) > inventoryTimeout {
+			t.Fatalf("cloud inventory request has no bounded deadline: %v", deadline)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("inventory request did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrCameraUnavailable) {
+			t.Fatalf("inventory error = %v, want ErrCameraUnavailable", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cloud inventory kept running after request cancellation")
+	}
 }
 
 func TestProviderReplacesSourceWhenSameDIDGetsNewIP(t *testing.T) {
@@ -239,7 +434,7 @@ func TestProviderDoesNotPublishDelayedCachedInventoryAfterRefresh(t *testing.T) 
 	// Pause between the cache copy and its publication, then let a later refresh
 	// publish the new address first. This exercises the same two phases used by
 	// Cameras() without relying on goroutine timing.
-	cached, refreshed, staleSequence, err := provider.cameraDevices()
+	cached, refreshed, staleSequence, err := provider.cameraDevices(context.Background())
 	if err != nil || refreshed || staleSequence == 0 || len(cached) != 1 || cached[0].IP != oldDevice.IP {
 		t.Fatalf("cache read = %#v, refreshed=%t, sequence=%d, err=%v", cached, refreshed, staleSequence, err)
 	}
@@ -538,7 +733,7 @@ func TestProviderProfilesPreserveC201IdentityAndBaselineWithoutInventoryFirmware
 		t.Fatalf("camera identities = %q, %q; want distinct IDs derived from each DID", cameras[0].ID, cameras[1].ID)
 	}
 	for _, camera := range cameras {
-		if camera.ModelID != supportedModel || camera.Firmware != "" || !camera.Selected || !camera.Capabilities.Video || !camera.Capabilities.Snapshot {
+		if camera.ModelID != supportedModel || camera.Firmware != "" || !camera.Selected || !camera.Capabilities.Video || !camera.Capabilities.Snapshot || !camera.Capabilities.PTZ {
 			t.Errorf("C201 baseline changed without inventory firmware: %#v", camera)
 		}
 		if camera.Support == nil || camera.Support.Features["video"].Reason != model.ErrorUnverifiedFirmware {
@@ -554,15 +749,13 @@ func TestProviderProfilesPreserveC201IdentityAndBaselineWithoutInventoryFirmware
 	}
 }
 
-func TestProviderDoesNotAdvertiseUnprofiledCandidateModels(t *testing.T) {
+func TestProviderDoesNotAdvertiseCandidateModelsWithoutTestMode(t *testing.T) {
 	provider := &Provider{
 		cfg:     Config{Region: "de"},
 		sources: make(map[model.CameraID]*cameraSource),
 		devices: []*cloud.Device{
-			{Did: "candidate-c400", Name: "C400", Model: "chuangmi.camera.039a04"},
-			// The Mi 360's exact model ID has not been identified; this placeholder
-			// deliberately exercises unknown-model behavior without guessing it.
-			{Did: "candidate-mi360", Name: "Mi 360", Model: "xiaomi.camera.unidentified"},
+			{Did: "candidate-c400", Name: "C400", Model: profiles.ModelC400},
+			{Did: "candidate-mi360", Name: "Mi 360", Model: profiles.ModelMi360},
 		},
 		loaded: time.Now(),
 	}
@@ -584,14 +777,121 @@ func TestProviderDoesNotAdvertiseUnprofiledCandidateModels(t *testing.T) {
 	}
 }
 
+func TestProviderCandidateProfilesDeclareExperimentalPTZAndRequireExplicitRegionalTestMode(t *testing.T) {
+	devices := []*cloud.Device{
+		{Did: "candidate-c400", Name: "Xiaomi Smart Camera C400", Model: profiles.ModelC400, IP: "192.168.2.84", MAC: "02:00:00:00:00:84"},
+		{Did: "candidate-mi360", Name: "Mi 360 Camera", Model: profiles.ModelMi360, IP: "192.168.2.184", MAC: "02:00:00:00:00:B8"},
+	}
+	for _, test := range []struct {
+		name      string
+		region    string
+		testMode  bool
+		wantVideo bool
+		wantPTZ   bool
+	}{
+		{name: "default mode", region: "de"},
+		{name: "explicit test mode", region: "de", testMode: true, wantVideo: true, wantPTZ: true},
+		{name: "test mode with unverified region", region: "us", testMode: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider := &Provider{
+				cfg:               Config{Region: test.region, TestExperimentalProfiles: test.testMode},
+				missSessionSource: &fakeProviderMissSessionSource{},
+				sources:           make(map[model.CameraID]*cameraSource),
+				devices:           devices,
+				loaded:            time.Now(),
+			}
+			cameras, err := provider.Cameras(context.Background())
+			if err != nil || len(cameras) != 2 {
+				t.Fatalf("Cameras() = %#v, err=%v", cameras, err)
+			}
+			for i, camera := range cameras {
+				if camera.Capabilities.Video != test.wantVideo || camera.Selected || camera.Capabilities.Snapshot || camera.Capabilities.Audio || camera.Capabilities.PTZ != test.wantPTZ {
+					t.Errorf("camera %s capabilities/selection = %#v selected=%t", camera.ModelID, camera.Capabilities, camera.Selected)
+				}
+				match, supported := provider.profileForDevice(devices[i])
+				if test.wantVideo {
+					if !supported || match.Profile.ModelID != camera.ModelID || match.FirmwareKnown || !match.RegionKnown || !match.Profile.Experimental || !match.Supports(profiles.FeatureVideo) {
+						t.Errorf("camera %s profile match = %#v supported=%t", camera.ModelID, match, supported)
+					}
+					if camera.Support == nil || camera.Support.Features["video"].Implementation != "research" || camera.Support.Features["video"].Reason != model.ErrorUnverifiedFirmware {
+						t.Errorf("camera %s lacks experimental evidence: %#v", camera.ModelID, camera.Support)
+					}
+					if err := provider.Step(context.Background(), camera.ID, "left"); !errors.Is(err, ErrCameraUnavailable) {
+						t.Errorf("Step(%s) error = %v, want no active session", camera.ModelID, err)
+					}
+				} else {
+					if supported || camera.Support == nil || camera.Support.Features["video"].Reason != model.ErrorUnsupportedModel {
+						t.Errorf("camera %s escaped the mode/region gate: match=%#v supported=%t support=%#v", camera.ModelID, match, supported, camera.Support)
+					}
+				}
+			}
+			wantSources := 0
+			if test.wantVideo {
+				wantSources = 2
+			}
+			if len(provider.sources) != wantSources {
+				t.Errorf("media source count = %d, want %d", len(provider.sources), wantSources)
+			}
+			missSource := provider.missSessionSource.(*fakeProviderMissSessionSource)
+			if len(missSource.dids) != 0 {
+				t.Errorf("candidate listing or rejected PTZ prepared sessions: %v", missSource.dids)
+			}
+			provider.Close()
+		})
+	}
+}
+
+func TestProviderPassesCandidateProfileTransportToSessionOpener(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		profile   profiles.Profile
+		did       string
+		ip        string
+		mac       string
+		transport string
+	}{
+		{name: "C400 accepts negotiated transport", profile: profiles.C400Experimental(), did: "candidate-c400-transport", ip: "192.168.2.84", mac: "02:00:00:00:00:84"},
+		{name: "Mi 360 pins UDP", profile: profiles.Mi360Experimental(), did: "candidate-mi360-transport", ip: "192.168.2.184", mac: "02:00:00:00:00:B8", transport: "udp"},
+		{name: "AW300 accepts negotiated transport", profile: profiles.AW300Experimental(), did: "candidate-aw300-transport", ip: "192.0.2.13", mac: "02:00:00:00:00:13"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			device := &cloud.Device{Did: test.did, Model: test.profile.ModelID, IP: test.ip, MAC: test.mac}
+			provider := &Provider{
+				cfg:               Config{Region: "de", TestExperimentalProfiles: true},
+				missSessionSource: &fakeProviderMissSessionSource{},
+				sources:           make(map[model.CameraID]*cameraSource),
+				devices:           []*cloud.Device{device},
+				loaded:            time.Now(),
+			}
+			var gotConfig stream.Config
+			session := newFakeCameraSession(true)
+			provider.openMediaSession = func(_ context.Context, _ localmedia.SessionTarget, config stream.Config) (localmedia.Session, error) {
+				gotConfig = config
+				return session, nil
+			}
+			source := &cameraSource{provider: provider, device: device, id: cameraID(device.Did)}
+			provider.sources[source.id] = source
+			path := newFakeCameraPath(false)
+			startLocalMediaFixture(source, path)
+			defer source.close()
+
+			if gotConfig.Transport != test.transport || gotConfig.Model != test.profile.ModelID || gotConfig.Channel != "0" || gotConfig.Quality != test.profile.Quality || gotConfig.Audio {
+				t.Fatalf("session config = %#v; want transport=%s quality=%s channel=0 audio=false", gotConfig, test.transport, test.profile.Quality)
+			}
+		})
+	}
+}
+
 func TestProviderExperimentalProfileRequiresExplicitTestMode(t *testing.T) {
 	const experimentalModel = "test.camera.experimental"
 	registry, err := profiles.NewRegistry(profiles.Profile{
 		ID: "test-experimental-profile", Revision: 1, ModelID: experimentalModel,
-		Regions: []string{"de"}, FirmwareVersions: []string{"test-fw"},
-		Vendor: "cs2", ApplicationProtocol: "MISS", MediaProtocol: "CS2",
+		Regions: []string{"de"},
+		Vendor:  "cs2", ApplicationProtocol: "MISS", MediaProtocol: "CS2",
 		VideoCodec: "H265", Channel: "0", Quality: "auto", Experimental: true,
 		BaselineFeatures: []profiles.Feature{profiles.FeatureVideo, profiles.FeatureSnapshot, profiles.FeaturePTZ},
+		PTZControl:       profiles.DefaultMISSOperationPTZ(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -654,6 +954,155 @@ func TestProviderExperimentalProfileRequiresExplicitTestMode(t *testing.T) {
 	<-session.diagnosticEntered
 	if diagnostics, writes, _, directions := session.stats(); diagnostics != 1 || writes != 1 || !reflect.DeepEqual(directions, []string{"left"}) {
 		t.Fatalf("test-mode diagnostics/writes/directions = %d/%d/%v, want one declared PTZ write", diagnostics, writes, directions)
+	}
+}
+
+func TestProviderDoesNotAdvertiseFirmwareRestrictedExperimentalPTZWithoutFirmware(t *testing.T) {
+	profile := profiles.C400Experimental()
+	profile.ID = "test-firmware-gated-ptz"
+	profile.ModelID = "test.camera.firmware-gated-ptz"
+	profile.FirmwareVersions = []string{"1.2.3"}
+	registry, err := profiles.NewRegistry(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device := &cloud.Device{Did: "firmware-gated-camera", Name: "Firmware gated", Model: profile.ModelID}
+	provider := &Provider{
+		cfg:             Config{Region: "de", TestExperimentalProfiles: true},
+		profileRegistry: registry,
+		sources:         make(map[model.CameraID]*cameraSource),
+		devices:         []*cloud.Device{device},
+		loaded:          time.Now(),
+	}
+
+	cameras, err := provider.Cameras(context.Background())
+	if err != nil || len(cameras) != 1 {
+		t.Fatalf("Cameras() = %#v, err=%v", cameras, err)
+	}
+	if !cameras[0].Capabilities.Video || cameras[0].Capabilities.PTZ {
+		t.Fatalf("unknown firmware capabilities = %#v; want video=true, ptz=false", cameras[0].Capabilities)
+	}
+	if err := provider.Step(context.Background(), cameraID(device.Did), "left"); !errors.Is(err, ErrUnsupportedCamera) {
+		t.Fatalf("Step() error = %v, want ErrUnsupportedCamera", err)
+	}
+}
+
+func TestProviderDoesNotAdvertiseVerifiedOnlyPTZWithoutFirmwareIdentity(t *testing.T) {
+	profile := profiles.C400Experimental()
+	profile.ID = "test-verified-only-ptz"
+	profile.ModelID = "test.camera.verified-only-ptz"
+	profile.BaselineFeatures = []profiles.Feature{profiles.FeatureVideo}
+	profile.VerifiedFeatures = []profiles.Feature{profiles.FeaturePTZ}
+	registry, err := profiles.NewRegistry(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device := &cloud.Device{Did: "verified-only-camera", Name: "Verified only", Model: profile.ModelID}
+	provider := &Provider{
+		cfg:             Config{Region: "de", TestExperimentalProfiles: true},
+		profileRegistry: registry,
+		sources:         make(map[model.CameraID]*cameraSource),
+		devices:         []*cloud.Device{device},
+		loaded:          time.Now(),
+	}
+
+	cameras, err := provider.Cameras(context.Background())
+	if err != nil || len(cameras) != 1 {
+		t.Fatalf("Cameras() = %#v, err=%v", cameras, err)
+	}
+	if !cameras[0].Capabilities.Video || cameras[0].Capabilities.PTZ {
+		t.Fatalf("unknown firmware capabilities = %#v; want video=true, ptz=false", cameras[0].Capabilities)
+	}
+	if err := provider.Step(context.Background(), cameraID(device.Did), "left"); !errors.Is(err, ErrUnsupportedCamera) {
+		t.Fatalf("Step() error = %v, want ErrUnsupportedCamera", err)
+	}
+}
+
+func TestProviderLoadsUnknownLocalProfileAndUsesItsDirectionOperation(t *testing.T) {
+	const modelID = "vendor.future-ptzbox.v1"
+	profilePath := t.TempDir() + string(os.PathSeparator) + "profiles.json"
+	contents := `{"profiles":[{"id":"future-ptz-test-v1","revision":1,"model_id":"` + modelID + `","regions":["de"],"firmware_versions":[],"vendor":"cs2","application_protocol":"MISS","media_protocol":"CS2","transport":"tcp","video_codec":"H265","channel":"0","quality":"3","audio":false,"experimental":true,"baseline_features":["video","ptz"],"ptz_control":{"protocol":"miss-0x112-operation","operations":{"left":4,"right":3,"up":2,"down":1}}}]}`
+	if err := os.WriteFile(profilePath, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := profiles.LoadFile(profiles.DefaultRegistry(), profilePath)
+	if err != nil {
+		t.Fatalf("LoadFile() failed: %v", err)
+	}
+	provider, id, source, _, session, _ := newProviderStepFixture(true, true)
+	provider.cfg = Config{Region: "de", TestExperimentalProfiles: true}
+	provider.profileRegistry = registry
+	source.device.Model = modelID
+	if err := provider.Step(context.Background(), id, "left"); err != nil {
+		t.Fatalf("Step(left) error = %v", err)
+	}
+	<-session.diagnosticEntered
+	_, writes, _, directions := session.stats()
+	session.mu.Lock()
+	operations := append([]int(nil), session.operations...)
+	session.mu.Unlock()
+	if writes != 1 || !reflect.DeepEqual(directions, []string{"down"}) || !reflect.DeepEqual(operations, []int{4}) {
+		t.Fatalf("local profile PTZ writes=%d directions=%v operations=%v; want one operation 4 from left mapping", writes, directions, operations)
+	}
+}
+
+func TestProviderPublishesProfileMatchedModelWithoutCameraNameInTestMode(t *testing.T) {
+	const modelID = "vendor.future-ptzbox.v1"
+	profilePath := t.TempDir() + string(os.PathSeparator) + "profiles.json"
+	contents := `{"profiles":[{"id":"future-ptzbox-v1","revision":1,"model_id":"` + modelID + `","regions":["de"],"firmware_versions":[],"vendor":"cs2","application_protocol":"MISS","media_protocol":"CS2","transport":"tcp","video_codec":"H265","channel":"0","quality":"3","audio":false,"experimental":true,"baseline_features":["video","ptz"],"ptz_control":{"protocol":"miss-0x112-operation","operations":{"left":4,"right":3,"up":2,"down":1}}}]}`
+	if err := os.WriteFile(profilePath, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := profiles.LoadFile(profiles.DefaultRegistry(), profilePath)
+	if err != nil {
+		t.Fatalf("LoadFile() failed: %v", err)
+	}
+	device := &cloud.Device{Did: "future-ptzbox-did", Name: "Future PTZ box", Model: modelID}
+
+	for _, test := range []struct {
+		name      string
+		registry  *profiles.Registry
+		testMode  bool
+		wantCount int
+	}{
+		{name: "exact local profile in test mode", registry: registry, testMode: true, wantCount: 1},
+		{name: "test mode disabled", registry: registry, wantCount: 0},
+		{name: "no matching profile", registry: profiles.DefaultRegistry(), testMode: true, wantCount: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			inventory := &profiledFakeDeviceInventory{devices: []*cloud.Device{device}}
+			provider := &Provider{
+				cfg:             Config{Region: "de", TestExperimentalProfiles: test.testMode},
+				deviceInventory: inventory,
+				profileRegistry: test.registry,
+				sources:         make(map[model.CameraID]*cameraSource),
+			}
+			cameras, err := provider.Cameras(context.Background())
+			if err != nil || len(cameras) != test.wantCount {
+				t.Fatalf("Cameras() = %#v, err=%v; want count %d", cameras, err, test.wantCount)
+			}
+			if test.wantCount == 1 {
+				camera := cameras[0]
+				if camera.ModelID != modelID || !camera.Capabilities.Video || !camera.Capabilities.PTZ || camera.Selected {
+					t.Fatalf("profiled unknown camera = %#v; want exact model, video+PTZ, not selected", camera)
+				}
+				foundModel := false
+				for _, id := range inventory.modelIDs {
+					if id == modelID {
+						foundModel = true
+					}
+				}
+				if !foundModel {
+					t.Fatalf("expanded inventory model IDs = %v; missing exact experimental model %q", inventory.modelIDs, modelID)
+				}
+				if inventory.profileCalls != 1 || inventory.standardCalls != 0 {
+					t.Fatalf("inventory calls profiled=%d standard=%d, want 1/0", inventory.profileCalls, inventory.standardCalls)
+				}
+			} else if len(provider.sources) != 0 {
+				t.Fatalf("disabled or unmatched profile created %d media sources", len(provider.sources))
+			}
+			provider.Close()
+		})
 	}
 }
 
@@ -793,7 +1242,13 @@ func (p *fakeCameraPath) Ready() bool {
 	defer p.mu.Unlock()
 	return p.ready
 }
-func (p *fakeCameraPath) ReadySignal() <-chan struct{}              { return p.readySignal }
+func (p *fakeCameraPath) ReadySignal() <-chan struct{} { return p.readySignal }
+func (p *fakeCameraPath) SourceFormat() *model.VideoFormat {
+	if !p.Ready() {
+		return nil
+	}
+	return &model.VideoFormat{Codec: "H265"}
+}
 func (p *fakeCameraPath) WriteAccessUnit([]byte, int64, bool) error { return nil }
 func (p *fakeCameraPath) Close() {
 	p.mu.Lock()
@@ -819,6 +1274,7 @@ type fakeCameraSession struct {
 	closeCount        int
 	diagnosticCalls   int
 	directions        []string
+	operations        []int
 	writes            int
 	writeOK           bool
 	diagnosticEntered chan struct{}
@@ -873,9 +1329,14 @@ func (s *fakeCameraSession) CameraSessionDiagnostics(ctx context.Context) (backe
 	}, ctx.Err()
 }
 
-func (s *fakeCameraSession) DiagnosticMotorStepObserved(direction string, onWrite func()) (bool, string) {
+func (s *fakeCameraSession) DiagnosticMotorOperationObserved(operation int, cameraLabel string, onWrite func()) (bool, string) {
+	direction := map[int]string{1: "left", 2: "right", 3: "up", 4: "down"}[operation]
+	if direction == "" {
+		direction = "unsupported"
+	}
 	s.mu.Lock()
 	s.diagnosticCalls++
+	s.operations = append(s.operations, operation)
 	s.directions = append(s.directions, direction)
 	release := s.releaseDiagnostic
 	writeOK := s.writeOK
@@ -1307,13 +1768,13 @@ func TestProviderSerializesStepsOnTheSameCameraSession(t *testing.T) {
 	}
 }
 
-func TestProviderStepRejectsUnknownMissingAndUnreadySessions(t *testing.T) {
+func TestProviderStepRequiresExistingActiveSessionButNotRTSPReadiness(t *testing.T) {
 	provider, id, source, _, session, _ := newProviderStepFixture(false, true)
-	if err := provider.Step(context.Background(), id, "left"); !errors.Is(err, ErrCameraUnavailable) {
-		t.Fatalf("unready Step() error = %v, want ErrCameraUnavailable", err)
+	if err := provider.Step(context.Background(), id, "left"); err != nil {
+		t.Fatalf("active session with unready RTSP Step() error = %v, want success", err)
 	}
-	if diagnostics, writes, _, _ := session.stats(); diagnostics != 0 || writes != 0 {
-		t.Fatalf("unready session diagnostics/writes = %d/%d", diagnostics, writes)
+	if diagnostics, writes, _, directions := session.stats(); diagnostics != 1 || writes != 1 || !reflect.DeepEqual(directions, []string{"left"}) {
+		t.Fatalf("pre-ready session diagnostics/writes/directions = %d/%d/%v", diagnostics, writes, directions)
 	}
 
 	// A missing session and path must fail locally. A nil relay makes any
@@ -1330,8 +1791,21 @@ func TestProviderStepRejectsUnknownMissingAndUnreadySessions(t *testing.T) {
 	if err := provider.Step(context.Background(), id, "diagonal"); !errors.Is(err, ErrUnsupportedDirection) {
 		t.Fatalf("diagonal Step() error = %v, want ErrUnsupportedDirection", err)
 	}
-	if diagnostics, writes, _, _ := session.stats(); diagnostics != 0 || writes != 0 {
+	if diagnostics, writes, _, _ := session.stats(); diagnostics != 1 || writes != 1 {
 		t.Fatalf("rejected requests diagnostics/writes = %d/%d", diagnostics, writes)
+	}
+}
+
+func TestCameraVideoStatusSeparatesActiveSessionFromRTSPReadiness(t *testing.T) {
+	_, _, source, run, _, path := newProviderStepFixture(false, true)
+	status := source.videoStatus()
+	if status.State != model.VideoIdle || !status.SessionActive || path.Ready() {
+		t.Fatalf("active pre-ready status = %+v, path ready=%v", status, path.Ready())
+	}
+	source.markSessionEnding(run)
+	status = source.videoStatus()
+	if status.SessionActive {
+		t.Fatalf("ending session still reported active: %+v", status)
 	}
 }
 

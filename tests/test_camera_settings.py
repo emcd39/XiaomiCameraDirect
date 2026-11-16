@@ -38,6 +38,7 @@ class FakeCameraCoordinator:
         }
         self.last_update_success = True
         self.settings_coordinator = None
+        self.storage_coordinator = None
         self.listeners = []
 
     def async_add_listener(self, callback):
@@ -59,11 +60,16 @@ class FakeEntry:
 
 
 class FakeClient:
-    def __init__(self, responses, settings_response=None):
+    def __init__(self, responses, settings_response=None, storage_response=None,
+                 storage_started=None, storage_release=None):
         self.responses = list(responses)
         self.calls = 0
         self.settings_response = settings_response or {"observed_at": "now", "properties": {}}
+        self.storage_response = storage_response or {"observed_at": "now", "properties": {}}
+        self.storage_started = storage_started
+        self.storage_release = storage_release
         self.settings_calls = []
+        self.storage_calls = []
 
     async def supports_camera_settings(self):
         self.calls += 1
@@ -72,12 +78,117 @@ class FakeClient:
             raise response
         return response
 
+    async def camera_read_capabilities(self):
+        self.calls += 1
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        if isinstance(response, set):
+            return response
+        if response is True:
+            return {"camera_settings_read"}
+        return set()
+
     async def camera_settings(self, camera_id):
         self.settings_calls.append(camera_id)
         return self.settings_response
 
+    async def camera_storage(self, camera_id):
+        self.storage_calls.append(camera_id)
+        if self.storage_started is not None:
+            self.storage_started.set()
+        if self.storage_release is not None:
+            await self.storage_release.wait()
+        return self.storage_response
+
 
 class CameraSettingsEntityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_settings_entities_register_while_first_storage_read_is_delayed(self):
+        cameras = FakeCameraCoordinator()
+        entry = FakeEntry(cameras)
+        settings_response = {
+            "observed_at": "2026-11-13T12:00:00Z",
+            "properties": {
+                "night_shot": {"code": 0, "value": 2},
+                "indicator_light": {"code": 0, "value": True},
+                "motion_detection": {"code": 0, "value": True},
+                "human_detection": {"code": 0, "value": False},
+                "move_detection": {"code": 0, "value": True},
+                "pet_detection": {"code": 0, "value": False},
+            },
+        }
+        storage_response = {
+            "observed_at": "2026-11-13T12:00:01Z",
+            "properties": {
+                "card_status": {"code": 0, "value": 0, "unit": None},
+                "total": {"code": 0, "value": 0, "unit": None},
+                "free": {"code": 0, "value": 0, "unit": None},
+                "used": {"code": 0, "value": 0, "unit": None},
+            },
+        }
+        storage_started = asyncio.Event()
+        storage_release = asyncio.Event()
+        client = FakeClient(
+            [{"camera_settings_read", "sd_capacity"}],
+            settings_response,
+            storage_response,
+            storage_started,
+            storage_release,
+        )
+        sensor_entities = []
+        enabled_entities = []
+        await sensor.async_setup_entry(None, entry, sensor_entities.extend)
+        await binary_sensor.async_setup_entry(None, entry, enabled_entities.extend)
+
+        with TemporaryDirectory() as config_dir:
+            hass = HomeAssistant(config_dir)
+            await hass.async_start()
+            support = CameraSettingsSupport(hass, None, client, cameras)
+            support.start()
+            try:
+                await asyncio.wait_for(storage_started.wait(), timeout=5)
+
+                # `/storage` is still blocked. The already refreshed settings
+                # entities must have been handed to their HA platforms anyway.
+                self.assertEqual(client.settings_calls, ["c201"])
+                self.assertEqual(client.storage_calls, ["c201"])
+                self.assertFalse(storage_release.is_set())
+                self.assertFalse(support._task.done())
+                self.assertIsNotNone(cameras.settings_coordinator)
+                self.assertTrue(cameras.settings_coordinator.last_update_success)
+                self.assertIsNone(cameras.storage_coordinator)
+                self.assertEqual(len(sensor_entities), 1)
+                self.assertEqual(len(enabled_entities), 5)
+                self.assertEqual(sensor_entities[0].native_value, "Auto")
+                self.assertTrue(sensor_entities[0].available)
+                motion_sensor = next(entity for entity in enabled_entities if entity._key == "motion_detection")
+                self.assertTrue(motion_sensor.available)
+                self.assertTrue(motion_sensor.is_on)
+                self.assertEqual({entity._camera_id for entity in sensor_entities + enabled_entities}, {"c201"})
+
+                storage_release.set()
+                await support._task
+
+                self.assertIsNotNone(cameras.storage_coordinator)
+                self.assertEqual(len(sensor_entities), 5)
+                storage_entities = [entity for entity in sensor_entities if hasattr(entity, "_key")]
+                self.assertEqual(len(storage_entities), 4)
+                self.assertTrue(all(entity.available for entity in storage_entities))
+                self.assertTrue(all(entity.native_value == 0 for entity in storage_entities))
+                self.assertEqual(client.storage_calls, ["c201"])
+            finally:
+                storage_release.set()
+                support.stop()
+                if support._task is not None:
+                    await asyncio.gather(support._task, return_exceptions=True)
+                for unsubscribe in entry.unload_callbacks:
+                    unsubscribe()
+                if cameras.settings_coordinator is not None:
+                    await cameras.settings_coordinator.async_shutdown()
+                if cameras.storage_coordinator is not None:
+                    await cameras.storage_coordinator.async_shutdown()
+                await hass.async_stop()
+
     async def test_late_settings_support_discovers_one_sensor_and_five_binary_sensors(self):
         cameras = FakeCameraCoordinator()
         entry = FakeEntry(cameras)
@@ -199,6 +310,7 @@ class CameraSettingsEntityTests(unittest.IsolatedAsyncioTestCase):
         support = CameraSettingsSupport(None, None, client, cameras)
         self.assertFalse(await support.async_check())
         self.assertIsNone(cameras.settings_coordinator)
+        self.assertIsNone(cameras.storage_coordinator)
         self.assertEqual(client.calls, 1)
         self.assertEqual(client.settings_calls, [])
 

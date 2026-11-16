@@ -49,6 +49,7 @@ type Handler struct {
 	ptz                 PTZ
 	cameraProvider      backend.CameraProvider
 	settingsProvider    backend.CameraSettingsProvider
+	storageProvider     backend.CameraStorageProvider
 	managedStep         managedStepProvider
 	managedPTZ          backend.PTZProvider
 	snapshotProvider    backend.SnapshotProvider
@@ -100,6 +101,9 @@ func NewWithManagedStateAndDiagnostics(cfg config.Config, token string, ptz PTZ,
 		if _, supported := cameras.(backend.CameraSettingsProvider); supported {
 			features = append(features, "camera_settings_read")
 		}
+		if _, supported := cameras.(backend.CameraStorageProvider); supported {
+			features = append(features, "sd_capacity")
+		}
 		if _, supported := cameras.(backend.CameraDiagnosticsProvider); supported && enableDiagnostics {
 			features = append(features, "camera_session_diagnostics")
 		}
@@ -129,8 +133,15 @@ func newWithRuntimeInfo(cfg config.Config, token string, ptz PTZ, cameras backen
 		runtimeInfo.Features = append([]string{}, runtimeInfo.Features...)
 	}
 	stepProvider, _ := cameras.(managedStepProvider)
+	if stepProvider == nil && managedPTZ != nil {
+		stepProvider, _ = managedPTZ.(managedStepProvider)
+	}
 	settingsProvider, _ := cameras.(backend.CameraSettingsProvider)
+	storageProvider, _ := cameras.(backend.CameraStorageProvider)
 	diagnosticsProvider, _ := cameras.(backend.CameraDiagnosticsProvider)
+	if storageProvider != nil && runtimeInfo.InstanceID != "" && !containsFeature(runtimeInfo.Features, "sd_capacity") {
+		runtimeInfo.Features = append(runtimeInfo.Features, "sd_capacity")
+	}
 	runtimeInfo.EnableDiagnostics = runtimeInfo.EnableDiagnostics && diagnosticsProvider != nil
 	if runtimeInfo.EnableDiagnostics && !containsFeature(runtimeInfo.Features, "camera_session_diagnostics") {
 		runtimeInfo.Features = append(runtimeInfo.Features, "camera_session_diagnostics")
@@ -141,6 +152,7 @@ func newWithRuntimeInfo(cfg config.Config, token string, ptz PTZ, cameras backen
 		ptz:                 ptz,
 		cameraProvider:      cameras,
 		settingsProvider:    settingsProvider,
+		storageProvider:     storageProvider,
 		managedStep:         stepProvider,
 		managedPTZ:          managedPTZ,
 		snapshotProvider:    snapshotProvider(cameras),
@@ -161,7 +173,9 @@ func newWithRuntimeInfo(cfg config.Config, token string, ptz PTZ, cameras backen
 	})
 	mux.HandleFunc("GET /v1/cameras", h.list)
 	mux.HandleFunc("GET /v2/cameras", h.managedList)
+	mux.HandleFunc("GET /v2/cameras/{id}/stream", h.managedReadyStream)
 	mux.HandleFunc("GET /v2/cameras/{id}/settings", h.managedSettings)
+	mux.HandleFunc("GET /v2/cameras/{id}/storage", h.managedStorage)
 	mux.HandleFunc("GET /v2/cameras/{id}/snapshot", h.managedSnapshot)
 	if runtimeInfo.EnableDiagnostics {
 		mux.HandleFunc("GET /v2/cameras/{id}/diagnostics/{operation}", h.managedCameraDiagnostics)
@@ -237,6 +251,30 @@ func (h *Handler) managedSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond(w, http.StatusOK, settings)
+}
+
+func (h *Handler) managedStorage(w http.ResponseWriter, r *http.Request) {
+	if h.storageProvider == nil {
+		respond(w, http.StatusServiceUnavailable, map[string]string{"error": string(model.ErrorBackendUnavailable)})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	storage, err := h.storageProvider.CameraStorage(ctx, model.CameraID(r.PathValue("id")))
+	if err != nil {
+		switch {
+		case errors.Is(err, xiaomi.ErrCameraNotFound):
+			respond(w, http.StatusNotFound, map[string]string{"error": "camera_not_found"})
+		case errors.Is(err, xiaomi.ErrUnsupportedCamera):
+			respond(w, http.StatusConflict, map[string]string{"error": string(model.ErrorUnsupportedModel)})
+		case errors.Is(err, xiaomi.ErrInvalidCameraStorage):
+			respond(w, http.StatusBadGateway, map[string]string{"error": "invalid_backend_response"})
+		default:
+			respond(w, http.StatusServiceUnavailable, map[string]string{"error": string(model.ErrorBackendUnavailable)})
+		}
+		return
+	}
+	respond(w, http.StatusOK, storage)
 }
 
 func (h *Handler) managedCameraDiagnostics(w http.ResponseWriter, r *http.Request) {
@@ -570,12 +608,52 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 }
 
 type managedCameraList struct {
-	Cameras []managedCamera `json:"cameras"`
+	Cameras         []managedCamera `json:"cameras"`
+	OnDemandStreams bool            `json:"on_demand_streams,omitempty"`
+	ManagedSteps    bool            `json:"managed_steps,omitempty"`
 }
 
 type managedCamera struct {
 	model.Camera
 	Streams []backend.StreamEndpoint `json:"streams,omitempty"`
+}
+
+func validateStreams(streams []backend.StreamEndpoint) bool {
+	seen := make(map[string]struct{}, len(streams))
+	for _, stream := range streams {
+		if stream.Validate() != nil {
+			return false
+		}
+		if _, exists := seen[stream.ID]; exists {
+			return false
+		}
+		seen[stream.ID] = struct{}{}
+	}
+	return true
+}
+
+func (h *Handler) managedReadyStream(w http.ResponseWriter, r *http.Request) {
+	provider, ok := h.cameraProvider.(backend.ReadyStreamProvider)
+	if !ok {
+		respond(w, http.StatusNotFound, map[string]string{"error": "on_demand_stream_unsupported"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 16*time.Second)
+	defer cancel()
+	streams, err := provider.ReadyStreams(ctx, model.CameraID(r.PathValue("id")))
+	if errors.Is(err, xiaomi.ErrUnsupportedCamera) || (err == nil && len(streams) == 0) {
+		respond(w, http.StatusNotFound, map[string]string{"error": "camera_stream_not_found"})
+		return
+	}
+	if err != nil || ctx.Err() != nil {
+		respond(w, http.StatusServiceUnavailable, map[string]string{"error": string(model.ErrorStreamTimeout)})
+		return
+	}
+	if !validateStreams(streams) {
+		respond(w, http.StatusBadGateway, map[string]string{"error": "invalid_backend_response"})
+		return
+	}
+	respond(w, http.StatusOK, map[string][]backend.StreamEndpoint{"streams": streams})
 }
 
 func cloneManagedCameras(source []model.Camera) []model.Camera {
@@ -584,6 +662,10 @@ func cloneManagedCameras(source []model.Camera) []model.Camera {
 		cameras[i] = camera
 		cameras[i].Video.LastFrameAt = cloneTimestamp(camera.Video.LastFrameAt)
 		cameras[i].Video.UpdatedAt = cloneTimestamp(camera.Video.UpdatedAt)
+		if camera.Video.SourceFormat != nil {
+			sourceFormat := *camera.Video.SourceFormat
+			cameras[i].Video.SourceFormat = &sourceFormat
+		}
 		if camera.Support != nil {
 			support := *camera.Support
 			support.Features = make(map[string]model.FeatureSupport, len(camera.Support.Features))
@@ -618,6 +700,17 @@ func cloneTimestamp(source *time.Time) *time.Time {
 }
 
 func (h *Handler) managedList(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	includeStreams := query.Get("include_streams")
+	if includeStreams != "" && includeStreams != "true" && includeStreams != "false" {
+		respond(w, http.StatusBadRequest, map[string]string{"error": "invalid_stream_query"})
+		return
+	}
+	streamsFor := query.Get("streams_for")
+	if streamsFor != "" && includeStreams == "false" {
+		respond(w, http.StatusBadRequest, map[string]string{"error": "invalid_stream_query"})
+		return
+	}
 	if h.cameraProvider == nil {
 		if h.managedState != nil && len(h.managedState.Snapshot().SelectedCameraIDs) == 0 {
 			respond(w, http.StatusOK, managedCameraList{Cameras: []managedCamera{}})
@@ -636,13 +729,25 @@ func (h *Handler) managedList(w http.ResponseWriter, r *http.Request) {
 	// shared provider state.
 	cameras = cloneManagedCameras(cameras)
 	response := managedCameraList{Cameras: make([]managedCamera, 0, len(cameras))}
+	_, response.OnDemandStreams = h.cameraProvider.(backend.ReadyStreamProvider)
+	// Native managed steps are supplied by the camera provider itself. Static
+	// configuration keeps the legacy PTZ route and its configured IDs.
+	_, response.ManagedSteps = h.cameraProvider.(managedStepProvider)
 	streamProvider, hasStreams := h.cameraProvider.(backend.StreamProvider)
+	streamFilterFound := streamsFor == ""
+	if streamsFor != "" && !hasStreams {
+		respond(w, http.StatusServiceUnavailable, map[string]string{"error": string(model.ErrorBackendUnavailable)})
+		return
+	}
 	for i := range cameras {
-		if h.managedPTZ == nil {
+		if h.managedStep == nil && h.managedPTZ == nil {
 			cameras[i].Capabilities.PTZ = false
-			cameras[i].Capabilities.Presets = false
 			cameras[i].Control = model.ControlStatus{State: model.ControlUnsupported}
-			removeFeatureEvidence(&cameras[i], "ptz", "presets")
+			removeFeatureEvidence(&cameras[i], "ptz")
+		}
+		if h.managedPTZ == nil {
+			cameras[i].Capabilities.Presets = false
+			removeFeatureEvidence(&cameras[i], "presets")
 		}
 		if h.settingsProvider == nil {
 			removeFeatureEvidence(&cameras[i], "camera_settings_read")
@@ -657,27 +762,28 @@ func (h *Handler) managedList(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		entry := managedCamera{Camera: cameras[i]}
-		if hasStreams && cameras[i].Capabilities.Video {
+		if streamsFor != "" && string(cameras[i].ID) == streamsFor {
+			streamFilterFound = true
+		}
+		includeCameraStreams := includeStreams != "false" &&
+			(streamsFor == "" || string(cameras[i].ID) == streamsFor)
+		if hasStreams && cameras[i].Capabilities.Video && includeCameraStreams {
 			streams, err := streamProvider.Streams(r.Context(), cameras[i].ID)
 			if err != nil {
 				respond(w, http.StatusServiceUnavailable, map[string]string{"error": string(model.ErrorBackendUnavailable)})
 				return
 			}
-			seenStreams := make(map[string]struct{}, len(streams))
-			for _, stream := range streams {
-				if stream.Validate() != nil {
-					respond(w, http.StatusBadGateway, map[string]string{"error": "invalid_backend_response"})
-					return
-				}
-				if _, exists := seenStreams[stream.ID]; exists {
-					respond(w, http.StatusBadGateway, map[string]string{"error": "invalid_backend_response"})
-					return
-				}
-				seenStreams[stream.ID] = struct{}{}
+			if !validateStreams(streams) {
+				respond(w, http.StatusBadGateway, map[string]string{"error": "invalid_backend_response"})
+				return
 			}
 			entry.Streams = streams
 		}
 		response.Cameras = append(response.Cameras, entry)
+	}
+	if !streamFilterFound {
+		respond(w, http.StatusNotFound, map[string]string{"error": "camera_not_found"})
+		return
 	}
 	respond(w, http.StatusOK, response)
 }

@@ -50,8 +50,14 @@ func (s *Session) DiagnosticMotorStepObserved(direction string, onWrite func()) 
 	if err != nil {
 		return PTZDiagnosticResult{cameraLabel: "C201", transport: safePTZTransport(s.Protocol), writeStatus: "not_attempted", replyStatus: "not_waited"}
 	}
-	return observePTZStepWithCallback("C201", safePTZTransport(s.Protocol), operation,
-		func() error { return s.Step(direction) },
+	return s.DiagnosticMotorOperationObserved(operation, "C201", onWrite)
+}
+
+// DiagnosticMotorOperationObserved sends a profile-selected operation and
+// observes the ordinary MISS reply without logging model or device identity.
+func (s *Session) DiagnosticMotorOperationObserved(operation int, cameraLabel string, onWrite func()) PTZDiagnosticResult {
+	return observePTZStepWithCallback(cameraLabel, safePTZTransport(s.Protocol), operation,
+		func() error { return s.StepOperation(operation) },
 		s.takeReplies, time.Now, time.Sleep, onWrite)
 }
 
@@ -221,7 +227,7 @@ func sanitizePTZReplyFields(body []byte) map[string]json.Number {
 }
 
 func safePTZLabel(value string) string {
-	if value == "C201" {
+	if value == "C201" || value == "MISS" {
 		return value
 	}
 	return "unknown"

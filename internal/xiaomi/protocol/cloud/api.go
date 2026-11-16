@@ -56,7 +56,32 @@ func (d *Device) IsCamera() bool {
 
 // Devices returns every camera on the account.
 func (a *Account) Devices() ([]*Device, error) {
-	res, err := a.request("/v2/home/device_list_page", "{}")
+	return a.DevicesContext(context.Background())
+}
+
+func (a *Account) DevicesContext(ctx context.Context) ([]*Device, error) {
+	return a.devicesWithCameraModels(ctx, nil)
+}
+
+// DevicesWithCameraModels also returns exact model IDs supplied by enabled
+// experimental camera profiles. The normal camera-name checks remain in
+// place; arbitrary household devices are not returned.
+func (a *Account) DevicesWithCameraModels(modelIDs []string) ([]*Device, error) {
+	return a.DevicesWithCameraModelsContext(context.Background(), modelIDs)
+}
+
+func (a *Account) DevicesWithCameraModelsContext(ctx context.Context, modelIDs []string) ([]*Device, error) {
+	models := make(map[string]struct{}, len(modelIDs))
+	for _, modelID := range modelIDs {
+		if modelID = strings.TrimSpace(modelID); modelID != "" {
+			models[modelID] = struct{}{}
+		}
+	}
+	return a.devicesWithCameraModels(ctx, models)
+}
+
+func (a *Account) devicesWithCameraModels(ctx context.Context, modelIDs map[string]struct{}) ([]*Device, error) {
+	res, err := a.requestContext(ctx, "/v2/home/device_list_page", "{}")
 	if err != nil {
 		return nil, err
 	}
@@ -68,13 +93,20 @@ func (a *Account) Devices() ([]*Device, error) {
 		return nil, err
 	}
 
-	cameras := make([]*Device, 0, len(v.List))
-	for _, d := range v.List {
-		if d.IsCamera() {
-			cameras = append(cameras, d)
+	return filterCameraDevices(v.List, modelIDs), nil
+}
+
+func filterCameraDevices(devices []*Device, modelIDs map[string]struct{}) []*Device {
+	cameras := make([]*Device, 0, len(devices))
+	for _, device := range devices {
+		if device == nil {
+			continue
+		}
+		if _, explicitlyProfiled := modelIDs[device.Model]; device.IsCamera() || explicitlyProfiled {
+			cameras = append(cameras, device)
 		}
 	}
-	return cameras, nil
+	return cameras
 }
 
 // MissSession is everything needed to open a peer-to-peer media session: the

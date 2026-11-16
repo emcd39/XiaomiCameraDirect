@@ -1,0 +1,8 @@
+{
+  "listen": "127.0.0.1:18880",
+  "mock": true,
+  "gateway_url": "http://127.0.0.1:49320",
+  "ffmpeg_path": "ffmpeg.exe",
+  "record_dir": "recordings",
+  "ptz": { "enabled": false }
+}

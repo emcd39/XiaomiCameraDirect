@@ -78,6 +78,37 @@ Authorization: Bearer <gateway-token>
 }
 ```
 
+### Streams on demand
+
+For active Xiaomi RTSP relay streams, `video.source_format` may include the source
+`codec` (`H264` or `H265`) and the `width` and `height` declared by the
+published video parameters. Changes to the parameters are reported after the next
+keyframe. Reading this field does not start a stream.
+Dimensions are omitted if unavailable. Home Assistant exposes this metadata as
+`source_codec` and `source_resolution` camera attributes. These describe the
+gateway's source before any downstream transcoding.
+
+When a provider supports opening a ready source, the inventory response includes
+`"on_demand_streams": true`. Home Assistant polls `GET /v2/cameras?include_streams=false`
+in this mode and uses the per-camera video capability to expose the stream action.
+Live view and camera image requests obtain one source with the authenticated
+`GET /v2/cameras/{id}/stream`. It returns `{"streams": [...]}` without refreshing
+the account inventory, waits at most 16 seconds when the provider needs to
+prepare a camera session, and returns 503 with `stream_timeout` if it cannot
+get a ready source. Configured static RTSP is returned directly. The legacy
+inventory response and the console's nonblocking `streams_for` option retain
+their previous behavior.
+
+HA defaults to HLS for these on-demand sources. During automatic WebRTC
+provider discovery the integration withholds the source to avoid opening a
+camera while registering its entity. A live HLS or image request still opens
+the source explicitly.
+
+The inventory also includes `"managed_steps": true` for native camera
+providers that implement the v2 single step route. For these cameras HA first
+requests a ready source, then sends one v2 PTZ step. Failed preparation sends
+no step. Configured ONVIF buttons continue to use v1.
+
 ### Optional per-camera support evidence
 
 `GET /v2/cameras` may include an optional `support` object for clients that can display per-function diagnostics. Existing `capabilities`, `video`, and `control` fields remain unchanged and sufficient for older clients. `capabilities` states what the selected backend advertises for that camera/profile; `video` and `control` report current state; `support` explains implementation scope and evidence. Unknown or absent `support` data must not make an otherwise valid camera unusable.

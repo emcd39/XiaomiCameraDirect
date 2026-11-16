@@ -34,6 +34,14 @@ class GatewayClientTests(unittest.IsolatedAsyncioTestCase):
             },
         })
         self.settings_requests = []
+        self.storage_body = json.dumps({
+            "observed_at": "2026-11-13T09:00:00Z",
+            "properties": {
+                "card_status": {"code": 0, "value": 1, "unit": None},
+                "total": {"code": 0, "value": 0, "unit": None},
+            },
+        })
+        self.storage_requests = []
 
         async def inventory(request):
             if request.path == "/v2/cameras":
@@ -49,6 +57,10 @@ class GatewayClientTests(unittest.IsolatedAsyncioTestCase):
             self.settings_requests.append((request.match_info["camera_id"], request.headers.get("Authorization")))
             return web.Response(text=self.settings_body, content_type="application/json")
 
+        async def storage(request):
+            self.storage_requests.append((request.match_info["camera_id"], request.headers.get("Authorization")))
+            return web.Response(text=self.storage_body, content_type="application/json")
+
         async def snapshot(request):
             if request.headers.get("Authorization") != "Bearer test-token":
                 return web.Response(status=401)
@@ -59,6 +71,7 @@ class GatewayClientTests(unittest.IsolatedAsyncioTestCase):
         app.router.add_get("/v2/cameras", inventory)
         app.router.add_get("/v2/info", info)
         app.router.add_get("/v2/cameras/{camera_id}/settings", settings)
+        app.router.add_get("/v2/cameras/{camera_id}/storage", storage)
         app.router.add_get("/v2/cameras/{camera_id}/snapshot", snapshot)
         self.server = TestServer(app)
         await self.server.start_server()
@@ -85,6 +98,22 @@ class GatewayClientTests(unittest.IsolatedAsyncioTestCase):
             "id": "c201-test", "name": "C201 test", "model": "Xiaomi C201",
             "rtsp_url": "rtsp://gateway:8554/c201-test", "ptz": False,
         }])
+
+    async def test_source_format_requires_active_stream_and_valid_dimensions(self) -> None:
+        self.managed_status = 200
+        camera = {"id": "test", "name": "Test", "capabilities": {"video": True, "ptz": False}}
+        source_format = {"codec": "H265", "width": 1920, "height": 1080}
+        for state, height, expected_format in (
+            ("streaming", 1080, {"source_codec": "H265", "source_resolution": "1920×1080"}),
+            ("streaming", True, {"source_codec": "H265"}),
+            ("retrying", 1080, {}),
+        ):
+            with self.subTest(state=state, height=height):
+                camera["video"] = {"state": state, "source_format": {**source_format, "height": height}}
+                self.managed_body = json.dumps({"cameras": [camera]})
+                result, = await self.client.cameras()
+                self.assertEqual({key: value for key, value in result.items() if key.startswith("source_")},
+                                 expected_format)
 
     async def test_managed_camera_without_stream_or_ptz_does_not_invent_features(self) -> None:
         self.managed_status = 200
@@ -216,6 +245,35 @@ class GatewayClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(settings["properties"]["night_shot"], {"code": 0, "value": 2})
         self.assertEqual(settings["properties"]["motion_detection"], {"code": 0, "value": True})
         self.assertEqual(self.settings_requests, [("c201-test", "Bearer test-token")])
+
+    async def test_camera_storage_is_read_only_raw_and_requires_null_units(self) -> None:
+        storage = await self.client.camera_storage("c201-test")
+        self.assertEqual(storage["properties"]["card_status"], {"code": 0, "value": 1, "unit": None})
+        self.assertEqual(storage["properties"]["total"], {"code": 0, "value": 0, "unit": None})
+        self.assertEqual(self.storage_requests, [("c201-test", "Bearer test-token")])
+
+        self.storage_body = json.dumps({
+            "observed_at": "now",
+            "properties": {"total": {"code": 0, "value": 1, "unit": "bytes"}},
+        })
+        with self.assertRaises(GatewayError):
+            await self.client.camera_storage("c201-test")
+
+        self.storage_body = json.dumps({
+            "observed_at": "now",
+            "properties": {"total": {"code": 0, "value": (1 << 31) + 1, "unit": None}},
+        })
+        with self.assertRaises(GatewayError):
+            await self.client.camera_storage("c201-test")
+
+    async def test_storage_support_flag_is_separate_and_never_reads_without_advertisement(self) -> None:
+        self.info_body = '{"features":["camera_selection"]}'
+        self.assertFalse(await self.client.supports_camera_storage())
+        self.assertEqual(self.storage_requests, [])
+
+        self.info_body = '{"features":["camera_selection","sd_capacity"]}'
+        self.assertTrue(await self.client.supports_camera_storage())
+        self.assertEqual(self.storage_requests, [])
 
     async def test_settings_support_check_retries_after_transient_info_failure(self) -> None:
         self.info_status = 503

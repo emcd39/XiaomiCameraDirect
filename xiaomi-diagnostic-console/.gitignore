@@ -5,3 +5,4 @@ recordings/
 *.exe
 *_linux
 private/
+*.exe~

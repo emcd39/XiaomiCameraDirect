@@ -462,6 +462,15 @@ func (s *Session) Step(direction string) error {
 	if err != nil {
 		return err
 	}
+	return s.StepOperation(operation)
+}
+
+// StepOperation sends a bounded motor operation already selected by the
+// matched camera profile. MISS currently uses four single-step operations.
+func (s *Session) StepOperation(operation int) error {
+	if operation < miss.MotorPanPlus || operation > miss.MotorTiltPlus {
+		return fmt.Errorf("stream: invalid motor operation")
+	}
 	if s.motorStepSender != nil {
 		return s.motorStepSender(operation)
 	}

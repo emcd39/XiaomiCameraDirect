@@ -1,15 +1,16 @@
 # Xiaomi Local Gateway
 
-**Status: v0.1.0 — M0 developer preview, NOT a production-ready Xiaomi integration.**
+**Status: Developer preview.** The RTSP/ONVIF bridge and native managed
+Xiaomi MISS/CS2 gateway are available. Physical validation still varies by model.
 
 One integration layer for Xiaomi cameras, Home Assistant and Frigate. Built in
 Go with a small Python HACS integration. Inspired by independent Xiaomi reverse
 engineering without copying the Windows UI.
 
-**M0 works as a bridge over an *existing* RTSP+ONVIF server**, such as the
-`xiaomi-onvif` patched-go2rtc pair. It does **not yet implement Xiaomi MISS
-transport**, Xiaomi account login, stream session management, autoinstall or
-zero-cloud operation. Do not deploy as a security-critical recorder yet.
+The bridge can use an existing RTSP/ONVIF server such as the `xiaomi-onvif`
+patched-go2rtc pair. Managed mode uses an authorized Xiaomi account to discover
+cameras and negotiate local media for supported profiles. See the current
+[camera evidence](docs/LOCAL-CAMERA-PROGRESS.md) and [managed API](docs/API-MANAGED.md).
 
 ## Architecture
 
@@ -22,9 +23,30 @@ Xiaomi cameras ── LAN MISS/CS2 ── patched go2rtc + xiaomi-onvif (externa
                                       └── Frigate (record/detect/ONVIF PTZ)
 ```
 
-We will replace the external Xiaomi-specific bridge with our own tested
-protocol backend in M2. The Go REST API, camera entity, Frigate mappings and
-configuration remain stable when doing so.
+The diagram shows bridge mode. In managed mode the Go gateway runs the native
+MISS/CS2 session and supplies its own RTSP source.
+
+### Managed pilot on native Linux
+
+Use a Linux host with a network interface on the cameras' LAN so the gateway
+can receive CS2 discovery replies. The following example assumes Home Assistant
+can reach the shown Linux host address. Substitute the host's actual LAN IP.
+
+```sh
+docker build --tag xlg-gateway:local .
+docker run -d --name xlg-gateway --restart unless-stopped --network host \
+  --mount type=volume,source=xlg-managed-data,target=/data \
+  --env-file /path/to/private/xlg-managed.env \
+  xlg-gateway:local -managed -listen 192.168.1.20:8099
+```
+
+In the private environment file, set `XLG_API_TOKEN` to a long random token
+and provide the authorized account as `XLG_XIAOMI_USER_ID`,
+`XLG_XIAOMI_REGION`, and `XLG_XIAOMI_TOKEN`. Set `XLG_RTSP_ADVERTISE_HOST`
+to the Linux host's LAN IP, and `XLG_RTSP_LISTEN` to that IP on port 8554
+(for example, `192.168.1.20:8554`). Add the Gateway integration in HA with the
+HTTP address and API token. The API and RTSP are reachable on the specified
+Linux interface. Keep them on your trusted network.
 
 ## Run the developer preview
 
@@ -82,6 +104,12 @@ GitHub owner/repository** before publishing. No GitHub repository is created
 by this package. See [docs/PUBLISH.md](docs/PUBLISH.md).
 
 ## Development
+
+On Windows, run `./scripts/test-camera-quick.ps1` to compile and test inside a
+disposable WSLc Linux container. Build the deployment image with
+`wslc build --tag xlg-gateway:local .`. On Linux, use the same Dockerfile or run
+`sh scripts/test-camera-quick.sh` with Go and Node installed. The
+[integration test guide](tests/README.md) describes the isolated HA stack.
 
 ```bash
 go test -race ./...

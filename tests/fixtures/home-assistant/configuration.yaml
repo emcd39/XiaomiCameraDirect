@@ -7,3 +7,39 @@ homeassistant:
   name: Xiaomi Gateway E2E
   unit_system: metric
   time_zone: Europe/Prague
+
+counter:
+  frigate_test_garden_triggers:
+    name: Frigate test garden triggers
+    initial: 0
+    step: 1
+  frigate_test_porch_triggers:
+    name: Frigate test porch triggers
+    initial: 0
+    step: 1
+
+automation:
+  - id: frigate_test_garden_motion
+    alias: Test Frigate garden motion trigger
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.test_garden_motion
+        from: "off"
+        to: "on"
+    action:
+      - service: counter.increment
+        target:
+          entity_id: counter.frigate_test_garden_triggers
+    mode: queued
+  - id: frigate_test_porch_motion
+    alias: Test Frigate porch motion trigger
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.test_porch_motion
+        from: "off"
+        to: "on"
+    action:
+      - service: counter.increment
+        target:
+          entity_id: counter.frigate_test_porch_triggers
+    mode: queued

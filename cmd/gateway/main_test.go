@@ -72,6 +72,9 @@ func TestManagedStartupRejectsCorruptStoreWithoutReplacingIt(t *testing.T) {
 	dataDir := t.TempDir()
 	path := filepath.Join(dataDir, "managed-state.json")
 	original := []byte(`{"schema_version":1,broken`)
+	if _, err := store.Open(path); err != nil {
+		t.Fatalf("create secure state fixture: %v", err)
+	}
 	if err := os.WriteFile(path, original, 0o600); err != nil {
 		t.Fatal(err)
 	}

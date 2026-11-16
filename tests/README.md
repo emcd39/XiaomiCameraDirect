@@ -1,5 +1,31 @@
 # Local integration test stack
 
+From the repository root, run the quick camera regression in a disposable
+Linux container:
+
+```powershell
+./scripts/test-camera-quick.ps1
+```
+
+On Linux with Go and Node installed, the equivalent is
+`sh scripts/test-camera-quick.sh`. To build the production Linux image with
+WSLc, run `wslc build --tag xlg-gateway:local .`.
+
+The quick check runs the gateway inventory API, RTSP and console selection regressions,
+and the console UI test against in-process mocks. It checks that refresh lists
+unsupported cameras, opens no stream, and that only an explicit supported camera
+selection starts one source. It also checks that polling never retries a failed
+session. Once the image is built, the quick check runs with container
+networking disabled. Use the full stack below for Home Assistant
+integration, media playback and outage coverage.
+
+For a physical C201 with the workstation's authorized Xiaomi Viewer account,
+run `./scripts/test-c201-ha.ps1`. It starts a Linux gateway and a fresh HA
+on a shared container network, and publishes only the HA UI on Windows
+loopback. The test verifies the inventory, a single C201 RTSP source, decoded
+JPEG and HLS, a ten-minute HLS soak and recovery after a gateway restart.
+If media negotiation fails, the sanitized evidence includes the CS2 stage.
+
 Run the disposable Home Assistant and gateway checks from PowerShell on the
 Windows workstation. The runner builds the gateway and ONVIF mock from this
 checkout, copies the current custom integration into a new HA config, verifies

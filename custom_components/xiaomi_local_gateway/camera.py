@@ -1,9 +1,13 @@
 """Home Assistant camera entity providing RTSP directly."""
 from __future__ import annotations
+from contextvars import ContextVar
 from homeassistant.components import ffmpeg
 from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.core import callback
+from .api import GatewayError
 from .entity import GatewayEntity
+
+_provider_probe_camera = ContextVar("xlg_provider_probe_camera", default=None)
 
 _SUPPORT_REASON_TEXT = {
     "auth_required": "Camera authorization is required.",
@@ -49,11 +53,29 @@ class GatewayCamera(GatewayEntity, Camera):
     @property
     def supported_features(self) -> CameraEntityFeature:
         camera = self.coordinator.data.get(self.did, {})
-        return CameraEntityFeature.STREAM if camera.get("rtsp_url") else CameraEntityFeature(0)
+        return CameraEntityFeature.STREAM if camera.get("rtsp_url") or camera.get("on_demand_stream") else CameraEntityFeature(0)
+
+    async def async_refresh_providers(self, *, write_state: bool = True) -> None:
+        # HA calls stream_source during WebRTC discovery when an entity is
+        # added. This probe must not open an on-demand source.
+        probe = _provider_probe_camera.set(self)
+        try:
+            await super().async_refresh_providers(write_state=write_state)
+        finally:
+            _provider_probe_camera.reset(probe)
 
     async def stream_source(self) -> str | None:
         camera = self.coordinator.data.get(self.did)
-        return camera.get("rtsp_url") if camera else None
+        if not camera:
+            return None
+        if camera.get("on_demand_stream"):
+            if _provider_probe_camera.get() is self:
+                return None
+            try:
+                return await self.coordinator.client.camera_stream(self.did)
+            except GatewayError:
+                return None
+        return camera.get("rtsp_url")
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
@@ -62,6 +84,9 @@ class GatewayCamera(GatewayEntity, Camera):
         attributes: dict[str, object] = {}
         if isinstance(model_id, str) and model_id:
             attributes["model_id"] = model_id
+        for key in ("source_codec", "source_resolution"):
+            if key in camera:
+                attributes[key] = camera[key]
         support = camera.get("support")
         if isinstance(support, dict):
             displayed_support = {
@@ -81,8 +106,7 @@ class GatewayCamera(GatewayEntity, Camera):
         return attributes
 
     async def async_camera_image(self, width=None, height=None) -> bytes | None:
-        camera = self.coordinator.data.get(self.did, {})
-        source = camera.get("rtsp_url")
+        source = await self.stream_source()
         if not source:
             return None
         # Decode the RTSP source inside Home Assistant. The gateway's host may

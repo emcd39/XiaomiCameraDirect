@@ -30,23 +30,24 @@ type event struct {
 }
 
 type Server struct {
-	cfg         Config
-	gateway     *Gateway
-	video       *Video
-	recording   Recording
-	ptz         PTZ
-	cameraMu    sync.Mutex
-	mu          sync.Mutex
-	events      []event
-	httpSrv     *http.Server
-	listenReady chan struct{}
+	cfg                     Config
+	gateway                 *Gateway
+	video                   *Video
+	recording               Recording
+	legacyRecordingVerifier func(string) bool
+	ptz                     PTZ
+	cameraMu                sync.Mutex
+	mu                      sync.Mutex
+	events                  []event
+	httpSrv                 *http.Server
+	listenReady             chan struct{}
 }
 
 func NewServer(cfg Config) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, gateway: newGateway(cfg), video: newVideo(cfg.Mock), listenReady: make(chan struct{})}, nil
+	return &Server{cfg: cfg, gateway: newGateway(cfg), video: newVideo(cfg.Mock), legacyRecordingVerifier: newLegacyRecordingVerifier(cfg.FFmpegPath), listenReady: make(chan struct{})}, nil
 }
 func (s *Server) event(kind, message string) {
 	s.mu.Lock()
@@ -68,7 +69,13 @@ func (s *Server) Run() error {
 	s.cfg.Listen = listener.Addr().String()
 	s.httpSrv = &http.Server{Addr: s.cfg.Listen, Handler: h, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
 	close(s.listenReady)
-	log.Printf("Diagnostic Console listening on http://%s (mock=%v; PTZ enabled=%v)", s.cfg.Listen, s.cfg.Mock, s.cfg.PTZ.Enabled)
+	ptzMode := "disabled"
+	if s.cfg.Mock {
+		ptzMode = "simulated"
+	} else if s.cfg.PTZ.Enabled {
+		ptzMode = "enabled"
+	}
+	log.Printf("Diagnostic Console listening on http://%s (mock=%v; PTZ=%s)", s.cfg.Listen, s.cfg.Mock, ptzMode)
 	err = s.httpSrv.Serve(listener)
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
@@ -182,6 +189,8 @@ func (s *Server) getStatus(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.Mock {
 		s.gateway.mu.RLock()
 		inventory := s.gateway.inventorySummary
+		inventory.Cameras = append([]CameraOption(nil), inventory.Cameras...)
+		inventory.C201Cameras = append([]CameraOption(nil), inventory.C201Cameras...)
 		s.gateway.mu.RUnlock()
 		g = GatewayStatus{Mode: "mock", Reachable: true, HTTPStatus: 200, InfoStatus: 200, Inventory: inventory, Note: "SIMULATION: no camera, network call or CS2 session"}
 	} else {
@@ -229,12 +238,21 @@ func (s *Server) refreshInventory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.cfg.Mock {
-		option := CameraOption{ID: "xiaomi_0000000000000001", Name: "Mock C201"}
-		inv := InventorySummary{Loaded: true, CameraCount: 1, C201Count: 1, C201Cameras: []CameraOption{option}, SelectedCameraID: option.ID, SessionReady: true, SessionState: "streaming", FetchedAt: time.Now().UTC().Format(time.RFC3339)}
+		cameras := []CameraOption{
+			{ID: "xiaomi_0000000000000001", Name: "Mock C201 · Entrance", Model: "xiaomi.camera.c201", Video: true, VideoReady: true, VideoState: "streaming", SessionActive: true, PTZ: true, Selected: true},
+			{ID: "xiaomi_0000000000000002", Name: "Mock C201 · Living room", Model: "xiaomi.camera.c201", Video: true, VideoReady: true, VideoState: "streaming", SessionActive: true, PTZ: true},
+			{ID: "xiaomi_0000000000000003", Name: "Mock C400 · Garden", Model: "chuangmi.camera.039a04", Video: true, VideoReady: true, VideoState: "streaming"},
+			{ID: "lab_0000000000000004", Name: "Mock unknown model · PTZ test", Model: "vendor.camera.future-ptz", Video: true, VideoReady: true, VideoState: "streaming", SessionActive: true, PTZ: true},
+		}
+		c201Cameras := append([]CameraOption(nil), cameras[:2]...)
+		inv := InventorySummary{Loaded: true, CameraCount: len(cameras), C201Count: len(c201Cameras), Cameras: cameras, C201Cameras: c201Cameras, SelectedCameraID: cameras[0].ID, SessionReady: true, SessionActive: true, SessionState: "streaming", FetchedAt: time.Now().UTC().Format(time.RFC3339)}
 		s.gateway.mu.Lock()
 		s.gateway.inventorySummary = inv
-		s.gateway.cameras = map[string]gatewayCamera{option.ID: {option: option, model: "xiaomi.camera.c201", videoState: "streaming", rtspURL: "rtsp://127.0.0.1/mock"}}
-		s.gateway.selectedCameraID = option.ID
+		s.gateway.cameras = make(map[string]gatewayCamera, len(cameras))
+		for _, option := range cameras {
+			s.gateway.cameras[option.ID] = gatewayCamera{option: option, model: option.Model, videoState: option.VideoState, rtspURL: "rtsp://127.0.0.1/mock"}
+		}
+		s.gateway.selectedCameraID = cameras[0].ID
 		s.gateway.mu.Unlock()
 		s.event("inventory", "mock inventory refreshed (no camera request)")
 		jsonOut(w, 200, inv)
@@ -248,16 +266,7 @@ func (s *Server) refreshInventory(w http.ResponseWriter, r *http.Request) {
 		fail(w, 502, "gateway inventory refresh failed; see gateway log")
 		return
 	}
-	if inv.C201Count == 1 {
-		if err := s.gateway.PrepareSelected(ctx); err != nil {
-			inv = s.gateway.inventorySnapshot()
-			s.event("inventory", "C201 inventory loaded; camera session is not ready")
-			jsonOut(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error(), "inventory": inv})
-			return
-		}
-		inv = s.gateway.inventorySnapshot()
-	}
-	s.event("inventory", "C201 inventory loaded; selected session prepared when unique")
+	s.event("inventory", "inventory loaded without opening a camera session")
 	jsonOut(w, 200, inv)
 }
 
@@ -289,14 +298,24 @@ func (s *Server) selectCamera(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, "camera_not_found")
 		return
 	}
+	selected, exists := s.gateway.Camera(body.CameraID)
+	if !exists {
+		fail(w, http.StatusNotFound, "camera_not_found")
+		return
+	}
+	if !selected.Video {
+		s.event("inventory", "camera selected; video is unsupported for this model")
+		jsonOut(w, http.StatusOK, s.gateway.inventorySnapshot())
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 35*time.Second)
 	defer cancel()
-	if err := s.gateway.PrepareSelected(ctx); err != nil {
+	if err := s.gateway.StartCameraSession(ctx, body.CameraID); err != nil {
 		inv := s.gateway.inventorySnapshot()
 		jsonOut(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error(), "inventory": inv})
 		return
 	}
-	s.event("inventory", "selected C201 camera session prepared")
+	s.event("inventory", "one selected camera session start requested")
 	jsonOut(w, http.StatusOK, s.gateway.inventorySnapshot())
 }
 func (s *Server) videoStart(w http.ResponseWriter, r *http.Request) {
@@ -379,7 +398,11 @@ func (s *Server) recordStop(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, "POST") {
 		return
 	}
-	s.recording.Stop()
+	if err := s.recording.Stop(); err != nil {
+		s.event("record", "recording stopped before clean segment finalization")
+		fail(w, 500, "recording did not finalize cleanly; incomplete segment is hidden")
+		return
+	}
 	s.event("record", "local recording stopped")
 	jsonOut(w, 200, map[string]string{"result": "stopped"})
 }
@@ -387,7 +410,7 @@ func (s *Server) recordList(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, "GET") {
 		return
 	}
-	files, err := listRecordings(s.cfg.RecordDir)
+	files, err := listRecordingsWithLegacyVerifier(s.cfg.RecordDir, s.legacyRecordingVerifier)
 	if err != nil {
 		fail(w, 500, "cannot list recordings")
 		return
@@ -403,10 +426,25 @@ func (s *Server) recordDownload(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "invalid filename")
 		return
 	}
+	entries, err := os.ReadDir(s.cfg.RecordDir)
+	if err != nil {
+		fail(w, 404, "recording unavailable")
+		return
+	}
+	completed, err := completedRecordingNames(s.cfg.RecordDir, entries)
+	if err != nil {
+		fail(w, 404, "recording unavailable")
+		return
+	}
+	_, completedByManifest := completed[name]
 	path := filepath.Join(s.cfg.RecordDir, name)
 	// Deny links so an untrusted recording entry cannot point at a token file.
 	linkInfo, linkErr := os.Lstat(path)
-	if linkErr != nil || !linkInfo.Mode().IsRegular() {
+	if linkErr != nil || !linkInfo.Mode().IsRegular() || linkInfo.Size() <= 0 {
+		fail(w, 404, "recording unavailable")
+		return
+	}
+	if !completedByManifest && (!isLegacyRecordingFilename(name) || s.legacyRecordingVerifier == nil || !s.legacyRecordingVerifier(path)) {
 		fail(w, 404, "recording unavailable")
 		return
 	}
@@ -417,7 +455,7 @@ func (s *Server) recordDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 	st, err := f.Stat()
-	if err != nil || !st.Mode().IsRegular() {
+	if err != nil || !st.Mode().IsRegular() || st.Size() <= 0 {
 		fail(w, 404, "recording unavailable")
 		return
 	}
@@ -462,6 +500,21 @@ func (s *Server) ptzStep(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runPTZStep(w http.ResponseWriter, cameraID, direction string) {
+	if s.cfg.Mock {
+		option, exists := s.gateway.Camera(cameraID)
+		if !exists {
+			fail(w, http.StatusNotFound, "camera_not_found")
+			return
+		}
+		if s.gateway.SelectedCameraID() != cameraID {
+			fail(w, http.StatusConflict, "camera selection changed; no request was sent")
+			return
+		}
+		if !option.PTZ {
+			fail(w, http.StatusForbidden, "PTZ is not supported for the selected mock camera")
+			return
+		}
+	}
 	if s.cfg.PTZ.Enabled == false && !s.cfg.Mock {
 		fail(w, http.StatusForbidden, "live PTZ disabled in configuration")
 		return
@@ -472,8 +525,9 @@ func (s *Server) runPTZStep(w http.ResponseWriter, cameraID, direction string) {
 		status := http.StatusBadGateway
 		if strings.Contains(err.Error(), "camera selection changed") {
 			status = http.StatusConflict
-		}
-		if strings.Contains(err.Error(), "session") || strings.Contains(err.Error(), "select a C201") {
+		} else if strings.Contains(err.Error(), "PTZ is not supported") {
+			status = http.StatusForbidden
+		} else if strings.Contains(err.Error(), "session") || strings.Contains(err.Error(), "select a camera") {
 			status = http.StatusServiceUnavailable
 		}
 		jsonOut(w, status, map[string]any{"error": err.Error(), "result": result})

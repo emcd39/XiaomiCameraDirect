@@ -2,6 +2,8 @@
 from __future__ import annotations
 from homeassistant.components.button import ButtonEntity
 from homeassistant.core import callback
+from homeassistant.exceptions import HomeAssistantError
+from .api import GatewayError
 from .entity import GatewayEntity
 
 DIRECTIONS = ("up", "down", "left", "right")
@@ -35,4 +37,14 @@ class PTZButton(GatewayEntity, ButtonEntity):
                          "left":"mdi:arrow-left-bold","right":"mdi:arrow-right-bold"}[direction]
 
     async def async_press(self):
-        await self.coordinator.client.ptz_step(self.did,self.direction)
+        camera = self.coordinator.data.get(self.did, {})
+        if not camera.get("ptz"):
+            raise HomeAssistantError("PTZ is unavailable for this camera")
+        managed = camera.get("managed_steps", False)
+        client = self.coordinator.client
+        try:
+            if managed and camera.get("on_demand_stream"):
+                await client.camera_stream(self.did)
+            await client.ptz_step(self.did, self.direction, managed=managed)
+        except GatewayError as err:
+            raise HomeAssistantError(str(err)) from err

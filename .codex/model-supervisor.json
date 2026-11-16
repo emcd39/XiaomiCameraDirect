@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "enabled": true,
+  "workerModels": [
+    "gpt-6-luna",
+    "gpt-5.6-luna"
+  ],
+  "reviewerModel": "gpt-6.1-sol",
+  "reviewerEffort": "high",
+  "budgetScope": "request",
+  "maxReviewsPerSession": 8,
+  "maxContinuationsPerAgent": 4,
+  "reviewerTimeoutSeconds": 300,
+  "objective": "Run comprehensive Home Assistant integration tests for Xiaomi Local Gateway and report any failures or remaining gaps.",
+  "codexPath": "codex"
+}

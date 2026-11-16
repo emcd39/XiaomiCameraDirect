@@ -1,8 +1,15 @@
 # Xiaomi camera dashboard
 
-This example puts four cameras on one Home Assistant dashboard card. Mi 360
-and C201 show live video and overlay four single-step PTZ controls. C400 and
-Outdoor are status tiles until their media paths are verified.
+This example puts four live cameras on one Home Assistant dashboard card. Mi 360,
+C201 and C400 also show four single-step PTZ controls. C400 and Outdoor AW300 need
+their experimental video profiles enabled on the gateway
+(`XLG_XIAOMI_PROFILE_TEST_MODE=true`).
+
+Copy `xiaomi-live-camera.js` into Home Assistant's `config/www` folder and
+register `/local/xiaomi-live-camera.js?v=1` as a **JavaScript module** under
+**Settings → Dashboards → Resources**. Bump the version query when updating
+the file. The module wraps the native picture-elements card and reopens a
+stalled live feed on a visible dashboard, preserving its controls.
 
 Create a separate dashboard, open its raw configuration editor and copy
 `xiaomi-cameras-dashboard.yaml`. Replace the example camera and button IDs
@@ -25,3 +32,6 @@ no lookback. The final duration can vary with stream segments. These
 captures are stored by Home Assistant in local media; they do not read or
 change the camera's SD card. For persistent captures across container
 replacements, mount a persistent volume at `/media`.
+
+Run the dashboard reconnect regression from the repository root with
+`node --test tests/test_live_camera_card.cjs`.

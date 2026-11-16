@@ -184,6 +184,9 @@ func TestOpenCorruptStateDoesNotOverwriteFile(t *testing.T) {
 	if err := os.WriteFile(path, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := secureStateFile(path); err != nil {
+		t.Fatalf("secure fixture file: %v", err)
+	}
 	if _, err := Open(path); !errors.Is(err, ErrCorruptState) {
 		t.Fatalf("Open() error = %v, want ErrCorruptState", err)
 	}
@@ -202,6 +205,9 @@ func TestOpenRejectsUnsupportedSchema(t *testing.T) {
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := secureStateFile(path); err != nil {
+		t.Fatalf("secure fixture file: %v", err)
+	}
 	if _, err := Open(path); !errors.Is(err, ErrCorruptState) {
 		t.Fatalf("Open() error = %v, want ErrCorruptState", err)
 	}
@@ -211,13 +217,13 @@ func TestOpenRejectsUnsupportedSchema(t *testing.T) {
 }
 
 func TestOpenRejectsInsecureFilePermissions(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX permission bits are not enforced on Windows")
-	}
 	path := filepath.Join(t.TempDir(), "managed-state.json")
 	contents := `{"schema_version":1,"instance_id":"inst_0123456789abcdef0123456789abcdef","selection_revision":0,"selected_camera_ids":[]}`
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 		t.Fatal(err)
+	}
+	if err := setInsecureStateAccess(path); err != nil {
+		t.Fatalf("make state file insecure: %v", err)
 	}
 	if _, err := Open(path); !errors.Is(err, ErrInsecureState) {
 		t.Fatalf("Open() error = %v, want ErrInsecureState", err)

@@ -4,7 +4,31 @@ Test labels distinguish the product name, owner-reported identifier, protocol mo
 
 | Camera | Owner-reported identifier | Firmware / plugin | Account region | Video | PTZ |
 | --- | --- | --- | --- | --- | --- |
-| Xiaomi Smart Camera C201 | `1213911322` (shown under “ID”; field meaning not confirmed); linked account inventory reports `xiaomi.camera.c201` | `5.3.2_0016` / `4560.8.1-8` | EU | Tested on official and compatibility paths; no decoded frame | Not tested |
+| Xiaomi Smart Camera C201 | `1213911322` (shown under “ID”; field meaning not confirmed); linked account inventory reports `xiaomi.camera.c201` | `5.3.2_0016` / `4560.8.1-8` | EU | Prior direct/local decode evidence; current gateway first-media behavior has separate open results | Four physical directions documented; not re-run from current demo package |
+| Xiaomi Smart Camera C400 | Account inventory: `chuangmi.camera.039a04` | Firmware not present in inventory | `de` | Experimental profile, 2560×1440 live in test HA. CS2 transport is negotiated. | Experimental mapping; no physical PTZ write through the gateway |
+| Mi 360 | Account inventory: `chuangmi.camera.026c02` | Firmware not present in inventory | `de` | Experimental gateway profile; live H.265 preview over CS2/UDP, with earlier UDP timeouts | One left step through the gateway showed scene movement consistent with a left pan; other directions and HA acceptance pending |
+| Xiaomi Outdoor Camera AW300 | Account inventory: `mxiang.camera.mod13` | Firmware not present in inventory | `de` | Experimental video profile. One live HA decode passed over CS2/UDP; later starts timed out before the first frame. | No verified mapping |
+
+The current candidate results and remaining acceptance steps are recorded in
+[LOCAL-CAMERA-PROGRESS.md](LOCAL-CAMERA-PROGRESS.md).
+
+The AW300 identification comes from the catalog entry for
+[`mxiang.camera.mod13`](https://home.miot-spec.com/spec/mxiang.camera.mod13).
+Xiaomi lists H.265, 2304×1296 and microSD support for the
+[AW300 product](https://www.mi.com/global/product/xiaomi-outdoor-camera-aw300/specs/).
+The firmware is still needed to qualify AW300 support. An
+[upstream field report](https://github.com/AlexxIT/go2rtc/issues/2291) also
+reports a TCP session without media on a different AW300.
+After video and reconnect are verified, record separate acceptance results for
+quality selection, playback from SD, night vision, the spotlight, detection,
+and each direction of two-way audio. Xiaomi documents these in its
+[AW300 monitoring guide](https://www.mi.com/global/support/faq/details/KA-522328/)
+and [function settings guide](https://www.mi.com/global/support/faq/details/KA-522216/).
+
+Unknown Xiaomi models can be added through a local experimental profile file,
+but the camera's model/firmware, session transport and motor mapping must first
+be established. The file mechanism does not infer PTZ from inventory or enable
+an unknown motor protocol. See [PTZ profiles](PTZ-PROFILES.md).
 
 ## C201 investigation, 2026-11-05
 

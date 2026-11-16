@@ -63,10 +63,19 @@ const (
 )
 
 type VideoStatus struct {
-	State       VideoState `json:"state"`
-	Reason      ErrorCode  `json:"reason,omitempty"`
-	LastFrameAt *time.Time `json:"last_frame_at,omitempty"`
-	UpdatedAt   *time.Time `json:"updated_at,omitempty"`
+	State         VideoState   `json:"state"`
+	Reason        ErrorCode    `json:"reason,omitempty"`
+	SessionActive bool         `json:"session_active,omitempty"`
+	SourceFormat  *VideoFormat `json:"source_format,omitempty"`
+	LastFrameAt   *time.Time   `json:"last_frame_at,omitempty"`
+	UpdatedAt     *time.Time   `json:"updated_at,omitempty"`
+}
+
+// VideoFormat describes the source advertised by the active RTSP relay.
+type VideoFormat struct {
+	Codec  string `json:"codec"`
+	Width  int    `json:"width,omitempty"`
+	Height int    `json:"height,omitempty"`
 }
 
 type ControlStatus struct {

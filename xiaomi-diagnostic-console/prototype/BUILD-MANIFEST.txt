@@ -1,0 +1,290 @@
+artifact=Xiaomi Local Gateway camera lab prototype documentation package v0.2.20-candidate-ptz-live-results
+package_date=2026-11-15
+release_zip=dist/c201-lab-prototype-20261115-v0.2.20-candidate-ptz-live-results.zip
+zip_sha256_receipt=dist/c201-lab-prototype-20261115-v0.2.20-candidate-ptz-live-results.zip.sha256.txt
+supersedes=v0.2.19-candidate-ptz-live-results (same binaries; README clarifies private evidence remains in the source checkout)
+package_contents=Windows amd64 console, mock/live configs, loopback launch/test scripts, README, PTZ-PROFILES.md, BUILD-MANIFEST.txt
+revision_scope=documentation and live evidence only; no source or binary changes
+console_binary=bin/diagconsole-current.exe; unchanged
+console_exe_sha256=877AD27B63B155F35D49B6D25BA304921D4BE5CF8050C786344C72A4B3618405
+gateway_binary_separate=../xlg-gateway-v0.2.18-profiled-model-discovery.exe
+gateway_exe_sha256=A0CE07B29A34694D30291F241B4ED512E3E9D6FC20953AD91B0FE1D3E0B2B060
+ordinary_live_start=PASS: clean-extracted v0.2.18 console launched by scripts/Start-Live.ps1 -EnablePTZ with v0.2.18 gateway -EnableExperimentalProfiles
+account_restore_and_inventory=PASS: authorized account restore, region de, four cameras
+candidate_capabilities=PASS: raw gateway API and console /api/status both reported PTZ true for C400 and Mi 360
+candidate_session_isolation=PASS: gateway inventory was filtered to only the candidate under test; no isolated test opened a C201 session
+physical_ptz_c400=BLOCKED_AT_FIRST_MEDIA: two CS2/TCP sessions opened, both first reads timed out after about 10s, final state retrying/session_active=false; zero PTZ writes
+physical_ptz_mi360=LEFT_OBSERVED: one left step, one 0x112 operation=1 write, one 0x113 reply in 23ms; time-linked frames showed a rightward scene shift consistent with left pan; remaining directions unverified; profile remains experimental
+current_user_demo_63983=READ_ONLY_DIAGNOSED: old console hash 51952DF7308BEAD71AA7E58860374F6588D1C952D1C9E997310FF737E9561956; gateway xlg-candidate-ptz.exe hash AFECBDA6801CB15E8DDD4F659C06CFF4C7C4BD5C1E38EBED8C0739D78280B247; live gateway capability is false for C400/Mi360 although console switch is true; instance not changed
+previous_unfiltered_c201=two read-only media opens ended at first-media EOF; no PTZ/settings writes; candidate-only follow-up opened no C201 session
+live_evidence=../../.test-env/evidence/ptz-candidate-isolated-20261115/summary.log
+older_live_evidence=../../.test-env/evidence/ptz-candidates-live-20261115.log
+console_build=NOT_REBUILT: executable unchanged
+gateway_build=NOT_REBUILT: paired v0.2.18 binary unchanged
+
+## Historical v0.2.18 package metadata — previous live result superseded by v0.2.19 follow-up
+
+artifact=Xiaomi Local Gateway camera lab prototype package v0.2.18-profiled-model-discovery
+package_date=2026-11-15
+release_zip=dist/c201-lab-prototype-20261115-v0.2.18-profiled-model-discovery.zip
+zip_sha256_receipt=dist/c201-lab-prototype-20261115-v0.2.18-profiled-model-discovery.zip.sha256.txt
+package_contents=Windows amd64 console, mock/live configs, loopback launch/test scripts, README, and PTZ-PROFILES.md
+console_binary=bin/diagconsole-current.exe; existing generic camera-scoped console build, no source changes in this revision
+console_exe_sha256=877AD27B63B155F35D49B6D25BA304921D4BE5CF8050C786344C72A4B3618405
+gateway_binary_separate=../xlg-gateway-v0.2.18-profiled-model-discovery.exe (not inside the console ZIP)
+gateway_exe_sha256=A0CE07B29A34694D30291F241B4ED512E3E9D6FC20953AD91B0FE1D3E0B2B060
+profile_validation=PASS: local PTZ profiles require the provider-supported cs2/MISS/CS2/H265 session stack
+firmware_policy=PASS: local PTZ profiles with firmware_versions and profiles declaring PTZ only in verified_features are rejected with specific errors because inventory does not return firmware identity
+verified_only_ptz_profile=REJECTED: local Xiaomi PTZ profile cannot declare PTZ as verified because the camera inventory does not expose firmware identity
+profile_runtime_gate=PASS: experimental baseline PTZ with a firmware allowlist requires exact firmware and region match; verified-only PTZ remains disabled without firmware identity, including registries that bypass LoadFile
+profile_provider_tests=PASS: go test ./internal/xiaomi/profiles ./internal/xiaomi -count=1; includes unknown-model alternate map, incompatible stack, both loader firmware rejection cases, runtime firmware gate, provider refusals, and C201 baseline
+unclassified_model_inventory=PASS: explicit test mode asks Xiaomi inventory for exact experimental profile model IDs; provider publishes a non-.camera./.cateye. model only after exact profile, region, and baseline-video match
+unclassified_model_tests=PASS: go test ./internal/xiaomi/protocol/cloud ./internal/xiaomi/profiles ./internal/xiaomi -count=1; covers normal camera filtering, exact allowlisted model inclusion, unknown model publication and no-profile/disabled-mode exclusion
+managed_api_ptz_tests=PASS: focused optional-provider/authenticated-dispatch tests
+console_tests=PASS: go test ./internal/console -count=1
+console_ui_test=PASS: node scripts/Test-Preview-UI.js; unknown model step targets exact camera ID
+console_build=PASS: Windows amd64 source build -trimpath, console binary unchanged from v0.2.15
+gateway_build=PASS: C:\Apps\go\bin\go.exe build -trimpath -o xiaomi-diagnostic-console\dist\xlg-gateway-v0.2.18-profiled-model-discovery.exe ./cmd/gateway; module-cache stat warning was non-fatal
+full_httpapi_suite=ENVIRONMENT-LIMITED: unrelated Windows loopback restriction and POSIX permission expectations on NTFS; focused PTZ API tests pass
+live_gateway=BLOCKED before inventory/session: most recent headless account restore host-run-20261115-113529-d9682ec6 logged sanitized reason=dns; no network change since, so not repeated for v0.2.18; no camera session or command
+physical_ptz_c400=NOT SENT: no restored account, inventory or active camera session
+physical_ptz_mi360=NOT SENT: no restored account, inventory or active camera session
+physical_ptz_c201=NOT REPEATED: prior four-direction physical evidence retained
+verification_log=../../.test-env/evidence/ptz-profiled-model-inventory-20261115.log
+zip_sha256_receipt=adjacent .sha256.txt file (not embedded to avoid self-reference)
+
+Historical package notes from earlier prototype revisions follow; their build hashes and test results belong to the versions named in each section.
+artifact=Xiaomi Local Gateway camera lab prototype package v0.2.15-generic-ptz
+package_date=2026-11-15
+release_zip=dist/c201-lab-prototype-20261115-v0.2.15-generic-ptz.zip
+zip_sha256_receipt=dist/c201-lab-prototype-20261115-v0.2.15-generic-ptz.zip.sha256.txt
+package_contents=Windows amd64 console, mock/live configs, loopback launch/test scripts, README, and PTZ-PROFILES.md
+console_binary=bin/diagconsole-current.exe (source build, no embedded semantic version)
+console_exe_sha256=877AD27B63B155F35D49B6D25BA304921D4BE5CF8050C786344C72A4B3618405
+gateway_binary_separate=../xlg-gateway-v0.2.14-generic-ptz.exe (not inside the console ZIP)
+gateway_exe_sha256=9BCFF9C7E942C0009B5E7E210397A8B540AFAC06D6274A0D2696F53745719941
+console_build=PASS: C:\Apps\go\bin\go.exe build -trimpath -o prototype/bin/diagconsole-current.exe ./cmd/diagconsole
+console_go_test=PASS: go test ./internal/console -count=1
+console_ui_test=PASS: node scripts/Test-Preview-UI.js; unknown-model PTZ capability and camera ID included
+profile_provider_tests=PASS: C:\Apps\go\bin\go.exe test ./internal/xiaomi/profiles ./internal/xiaomi -count=1
+managed_api_ptz_tests=PASS: focused authenticated dispatch and optional-provider tests
+full_httpapi_suite=ENVIRONMENT-LIMITED: unrelated Windows loopback restriction and POSIX file-permission assumptions; focused PTZ tests pass
+package_http_smoke=BLOCKED by this Windows sandbox: extracted Start-Demo printed its loopback listen address, but PowerShell could not retrieve /api/status on 127.0.0.1:18882; package process stopped afterward
+mock_package_behavior=verified by passing Go handler and Node headless UI tests; mock mode has unknown-model PTZ, video-only rejection, simulated directions, no gateway/camera requests
+live_gateway=BLOCKED before inventory: sanitized account restore diagnostic reason=dns; no camera session or PTZ request attempted
+physical_ptz_c400=NOT SENT: live authorized inventory/session could not be restored
+physical_ptz_mi360=NOT SENT: live authorized inventory/session could not be restored
+physical_ptz_c201=NOT REPEATED: prior four-direction evidence retained
+verification_log=../../.test-env/evidence/ptz-generic-unknown-model-20261115.log
+zip_sha256_receipt=adjacent .sha256.txt file (not embedded to avoid self-reference)
+
+Historical package notes from earlier prototype revisions follow; their build hashes and test results belong to the versions named in each section.
+artifact=Xiaomi local camera lab prototype v0.2.12 documentation update
+console_binary_version=v0.2.7 (binary unchanged in this docs-only package revision)
+platform=Windows amd64
+source_worktree=modified; binaries built from current source
+console_build_command=C:\Apps\go\bin\go.exe build -trimpath -o bin/diagconsole-current.exe ./cmd/diagconsole
+gateway_build_command=C:\Apps\go\bin\go.exe build -trimpath -o .test-env/c201-pilot/win-gateway/xlg-gateway-v0.2.7-session-active-ptz.exe ./cmd/gateway
+go=go version go1.27.3 windows/amd64
+console_exe_sha256=B546456F706EBF9C8B26C9B12CF66AE63788B193B331AE04A0FBD826A3D59CA5
+gateway_exe_sha256=25C46B50E1389CECA798AD1C2B448B586E16158B0FBFB99CEE5DD0DFB731649C (historical v0.2.7 C201 comparison; latest candidate gateway is listed below)
+## Console v0.2.7 and paired C201 baseline; retained in this documentation-only archive
+console_build=PASS: direct Windows amd64, CGO_ENABLED=0, -trimpath; Build-Windows.ps1 blocked by the machine's script signing policy
+build_evidence=../../.test-env/evidence/demo-v027-build-20261115.log
+gateway_build=PASS: Windows amd64, -trimpath
+console_go_test=PASS: go test ./... -count=1
+console_go_test_log=../../.test-env/evidence/demo-v027-console-go-20261115.log
+console_go_vet=PASS: go vet ./...
+console_go_vet_log=../../.test-env/evidence/demo-v027-console-vet-20261115.log
+console_headless_ui=PASS: active C201 session enables PTZ before RTSP readiness; preview stays disabled; one PTZ request per click; stale camera results remain scoped
+console_headless_ui_log=../../.test-env/evidence/demo-v027-console-ui-20261115.log
+console_missing_stream_endpoint_regression=PASS: selected C201 returns an explicit unavailable response if streams_for has no allowed RTSP URL
+console_stale_ready_metadata_regression=PASS: VideoReady without session_active cannot suppress the single source-start request
+gateway_provider_tests=PASS: go test ./internal/xiaomi -count=1, including PTZ on active pre-ready session and rejection after termination
+gateway_provider_test_log=../../.test-env/evidence/demo-v025-gateway-xiaomi-go-20261115.log
+gateway_http_api_test=PASS: metadata-only endpoint retains active session state without starting streams
+gateway_http_api_test_log=../../.test-env/evidence/demo-v025-gateway-managed-api-go-20261115.log
+gateway_go_vet=PASS: go vet ./...
+gateway_go_vet_log=../../.test-env/evidence/demo-v025-gateway-vet-20261115.log
+race_detector=BLOCKED: Go requires CGO for -race; this host has no gcc/clang C compiler
+console_paired_live_preview=BLOCKED: clean-extracted v0.2.7 selected C201; paired gateway negotiated and opened CS2/TCP, then first media read returned EOF and session ended; zero preview frames, zero PTZ/settings writes; see ../../.test-env/evidence/demo-v027-c201-live-20261115.log
+console_paired_live_boundary=CONFIRMED: after session_open at first media delivery; paired gateway and contemporaneous direct Session.Read both return EOF with zero media; current source-side cause is not isolated
+console_paired_live_console_sha256=B546456F706EBF9C8B26C9B12CF66AE63788B193B331AE04A0FBD826A3D59CA5
+console_paired_live_gateway_sha256=25C46B50E1389CECA798AD1C2B448B586E16158B0FBFB99CEE5DD0DFB731649C
+console_paired_live_ptz=NOT SENT: no stable preview image, so physical movement could not be verified
+console_paired_live_log=../../.test-env/evidence/demo-v027-c201-live-20261115.log
+c201_direct_first_media=BLOCKED: read-only current C201 account restore, inventory and CS2/TCP open succeeded; raw Session.Read returned EOF after 2194 ms with zero frames/payload bytes and no FFmpeg; channel=0 quality=auto audio=false; PTZ writes disabled
+c201_direct_first_media_log=../../.test-env/evidence/c201-first-frame-readonly-20261115-030500-e9408be8.log
+c201_direct_ffmpeg_crosscheck=also received zero media packets/bytes before sanitized FFmpeg decode_error; confirms the decoder error followed absent input rather than explaining the raw EOF
+c201_direct_ffmpeg_crosscheck_log=../../.test-env/evidence/c201-first-frame-readonly-20261115-025733-d99c30a1.log
+historical_direct_c201_first_media=2026-11-06 direct CS2 test received H.265 media; historical result does not explain the current failure
+historical_direct_c201_log=../../.test-env/evidence/test-c201-cs2-20261106-224428-4e082a73.log
+v023_v027_comparison=BLOCKED_AT_MEDIA_SOURCE: no matching v0.2.3 gateway executable/hash is available; v0.2.3 reference record confirms five stable frames and observed left pan but omits negotiated transport and media-open parameters; current v0.2.7 gateway and raw direct runs used matching C201 parameters and both returned EOF before media
+v023_v027_comparison_log=../../.test-env/evidence/demo-v027-v023-comparison-20261115.log
+v023_reference_console_sha256=51952DF7308BEAD71AA7E58860374F6588D1C952D1C9E997310FF737E9561956
+v023_reference_gateway=UNAVAILABLE: no paired v0.2.3 gateway binary or digest in the local test environment
+v027_gateway_actual_transport=cs2+tcp after negotiated media_transport=auto; one open then EOF/session_end; no automatic reopen
+v027_direct_raw_actual_transport=cs2+tcp; channel=0 quality=auto audio=false; Session.Read=EOF; zero frames/payload bytes; FFmpeg bypassed
+v027_current_live_ptz=NOT SENT: no stable image was available; physical movement could not be verified
+package_clean_extract_mock=PASS: fresh extraction; Start-Demo.ps1, Smoke-Test.ps1 and Test-Mock.ps1; synthetic frames, camera chooser, simulated PTZ only; no gateway/camera calls
+package_clean_extract_log=../../.test-env/evidence/demo-v027-package-smoke-20261115.log
+release_zip=dist/c201-lab-prototype-20261115-v0.2.7-session-ptz.zip
+## Historical pre-v0.2.4 validation — 2026-11-14; not the current gateway result
+console_go_test=PASS: go test ./... -count=1
+console_go_test_log=../../.test-env/evidence/demo-camera-ptz-20261114-console-go.log
+console_go_vet=PASS: go vet ./...
+console_go_vet_log=../../.test-env/evidence/demo-camera-ptz-20261114-console-vet.log
+console_headless_ui=PASS: selector; mixed models; one non-C201 preview; per-camera PTZ enablement; click target IDs; slow status polling
+console_headless_ui_log=../../.test-env/evidence/demo-camera-ptz-20261114-ui.log
+mock_demo=PASS: two C201 options plus one video-only C400; server rejects PTZ for non-PTZ camera; no gateway calls
+managed_ptz_api_target=PASS: injected PTZProvider and camera step provider both advertise/dispatch one authenticated step
+gateway_api_target_test=PASS: focused managed PTZ tests
+gateway_api_target_log=../../.test-env/evidence/demo-camera-ptz-20261114-gateway-ptz-target.log
+gateway_go_vet=PASS: go vet ./...
+gateway_full_go_test=FAIL_PLATFORM: Windows Mode().Perm does not preserve POSIX 0600 expectations; remaining managed-state tests return ErrInsecureState
+gateway_full_go_test_log=../../.test-env/evidence/demo-camera-ptz-20261114-gateway-full-test-platform.log
+gateway_full_go_test_other_packages=PASS: loopback-dependent tests pass with approved local execution
+console_inventory_race_regression=PASS without race detector; status/selection/read-copy exercised concurrently
+console_race_detector=BLOCKED: CGO_ENABLED=1 attempt failed because gcc is not installed; WSL startup returns E_ACCESSDENIED
+console_race_attempt_log=../../.test-env/evidence/demo-camera-ptz-20261114-race-attempt.log
+package_clean_extraction=PASS: v0.2.2 ZIP extracted to a new directory; included Start-Demo.ps1, Test-Mock.ps1, and Smoke-Test.ps1 passed
+package_smoke=PASS: HTML, camera-selection JS, /api/status, /api/capabilities, /api/events, /api/record/files all HTTP 200
+package_mock_test=PASS: two C201 choices, video-only C400, preview frames, C400 PTZ HTTP 403, four simulated C201 directions; no gateway/camera calls
+package_smoke_port=default 18880 was occupied by existing diagconsole PID 27636 and was not stopped; Start-Demo.ps1 -Listen 127.0.0.1:18881 passed
+package_evidence=../../.test-env/evidence/demo-camera-ptz-c400-readiness-20261114-zip-smoke.log; ../../.test-env/evidence/demo-camera-ptz-c400-readiness-20261114-zip-http.log
+physical_ptz_write=NOT SENT BY THE PACKAGE MOCK SMOKE; live demo check is documented outside this release ZIP
+physical_camera_or_gateway_contact=NOT PERFORMED by package smoke
+production_installation=NOT VERIFIED
+api_token=not included
+## Historical v0.2.2 C400 startup readiness and live PTZ check — 2026-11-14
+console_exe_sha256=51952DF7308BEAD71AA7E58860374F6588D1C952D1C9E997310FF737E9561956
+console_test=PASS: go test ./... -count=1; includes TestRefreshInventoryWaitsForSingleNonC201VideoSession (single C400 starting -> streaming)
+console_test_log=../../.test-env/evidence/demo-camera-ptz-c400-readiness-20261114-go.log
+console_vet=PASS: go vet ./...
+console_vet_log=../../.test-env/evidence/demo-camera-ptz-c400-readiness-20261114-vet.log
+headless_ui=PASS: node scripts/Test-Preview-UI.js
+headless_ui_log=../../.test-env/evidence/demo-camera-ptz-c400-readiness-20261114-ui.log
+live_demo=updated from this executable at http://127.0.0.1:63983/; clean-ZIP mock smoke and HTTP smoke passed on 127.0.0.1:18881
+live_ptz=one left step through the existing local demo returned outcome=sent and http_write_status=sent; physical motion was not observed; project evidence is outside this release ZIP
+physical_observation=recorded in the live evidence; prior report already documents four-direction physical C201 test
+c400_readiness_targeted_log=../../.test-env/evidence/demo-camera-ptz-c400-readiness-20261114-targeted.log
+## Historical v0.2.3 camera-scoped PTZ result and stale response handling — 2026-11-14
+console_exe_sha256=51952DF7308BEAD71AA7E58860374F6588D1C952D1C9E997310FF737E9561956
+console_go_test=PASS: go test ./... -count=1
+console_go_test_log=../../.test-env/evidence/demo-ptz-result-camera-scope-20261114-go.log
+console_go_vet=PASS: go vet ./...
+console_go_vet_log=../../.test-env/evidence/demo-ptz-result-camera-scope-20261114-vet.log
+headless_ui=PASS: shows `sent` only for matching selected camera; ignores held C201 status and PTZ responses after switching to C400
+headless_ui_log=../../.test-env/evidence/demo-ptz-result-camera-scope-20261114-ui.log
+clean_zip_smoke=PASS: extracted v0.2.3 Start-Demo, Test-Mock and Smoke-Test; simulated PTZ only
+clean_zip_smoke_log=../../.test-env/evidence/demo-ptz-result-camera-scope-20261114-clean-zip.log
+live_demo=http://127.0.0.1:63983/ updated to this executable; one controlled live left comparison is recorded outside this release ZIP
+live_motion_observation=after one C201 left step, the fixed vertical wall corner shifted right in the live frame; consistent with left pan; no further PTZ steps sent
+live_motion_frames=../../.test-env/evidence/ptz-controlled-left-before-v023.jpg; ../../.test-env/evidence/ptz-controlled-left-after-v023.jpg
+
+## Historical v0.2.4 selected-camera stream startup — 2026-11-15; superseded by v0.2.6
+console_exe_sha256=B2C69A7E9984F7DD5F8B2491E5AF1DA15E17E0BFC177AF886D1CEFCC0E8FC1C4
+console_build=PASS: Windows amd64, CGO_ENABLED=0, source worktree
+console_go_test=PASS: go test ./... -count=1
+console_go_test_log=../../.test-env/evidence/selected-stream-console-go-20261115.log
+console_go_vet=PASS: go vet ./...
+console_go_vet_log=../../.test-env/evidence/selected-stream-console-vet-20261115.log
+headless_ui=PASS: node scripts/Test-Preview-UI.js
+headless_ui_log=../../.test-env/evidence/selected-stream-console-ui-20261115.log
+gateway_api_regressions=PASS: metadata-only inventory starts zero sources; streams_for starts only selected source; unknown ID starts none; default all-stream behavior remains compatible
+gateway_api_regression_log=../../.test-env/evidence/selected-stream-http-regressions-20261115.log
+gateway_windows_restart=PASS: managed Windows gateway served health/info and reopened protected state across two runs with a fake token; no cameras configured
+gateway_windows_restart_log=../../.test-env/evidence/windows-gateway-restart-smoke-20261115.log
+gateway_selected_stream_live=latest selected-only reads for both C400 and Mi 360 timed out at first media read; one earlier Mi 360 gateway run reached first H.265 media and RTSP ready; experimental profiles remain test-mode only; no PTZ sent
+gateway_c400_live_log=../../.test-env/evidence/c400-selected-stream-live-20261115-corrected.log
+gateway_mi360_live_log=../../.test-env/evidence/mi360-selected-stream-live-20261115-corrected.log
+gateway_windows_store_acl=PASS: platform-specific current-user DACL on Windows; POSIX 0600 check retained on Unix
+gateway_go_test=PASS: go test ./... -p 1 -count=1 (Windows amd64)
+gateway_go_test_log=../../.test-env/evidence/windows-gateway-go-all-serial-20261115.log
+gateway_go_vet=PASS: go vet ./...
+gateway_go_vet_log=../../.test-env/evidence/windows-gateway-vet-all-20261115.log
+gateway_linux_cross_build=PASS: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./...
+gateway_linux_cross_build_log=../../.test-env/evidence/linux-store-acl-crossbuild-20261115.log
+clean_zip_smoke=PASS: fresh extraction; Start-Demo.ps1, Test-Mock.ps1 and Smoke-Test.ps1 on loopback; mock PTZ only
+clean_zip_smoke_log=../../.test-env/evidence/demo-v024-final-package-smoke-20261115.log
+release_zip=dist/c201-lab-prototype-20261115-v0.2.4-selected-streams.zip
+c201_clean_zip_preview=BLOCKED: metadata-only inventory opened zero streams; clean v0.2.4 console selected C201; paired gateway opened CS2/TCP but 63 automatic retries ended in EOF before RTSP readiness; zero preview frames; PTZ disabled
+c201_preview_test_archive_sha256=A429942E603E31869549AEEE9A81770D110AB6F6D188E3FE7D578773BD0E60D2 (same console exe SHA as final ZIP; final archive changed only BUILD-MANIFEST.txt after the paired run)
+c201_preview_test_log=../../.test-env/evidence/v024-c201-selected-preview-20261115.log
+c201_preview_gateway=../../.test-env/c201-pilot/win-gateway/xlg-gateway-v0.2.4-selected-streams.exe
+c201_preview_gateway_sha256=BEDC5C52A4DADD352B7E088FEFB876A95EB97A752C1EBD58810B0940508BBC27
+candidate_direct_vs_gateway_first_media=comparison recorded: C400 direct yielded frames, gateway stopped after session_open at first media timeout; Mi 360 direct yielded frames, gateway first_media worked once then later reads timed out; quality/channel/audio settings matched
+candidate_first_media_log=../../.test-env/evidence/candidate-first-media-comparison-20261115.log
+
+## Historical v0.2.8 documentation update: C400 and Mi 360 comparison before explicit C400 TCP — 2026-11-15
+package_revision=documentation-only; console and gateway executables are the unchanged v0.2.7 binaries listed above
+release_zip=dist/c201-lab-prototype-20261115-v0.2.8-candidate-preview-results.zip
+console_exe_sha256=B546456F706EBF9C8B26C9B12CF66AE63788B193B331AE04A0FBD826A3D59CA5
+gateway_exe_sha256=25C46B50E1389CECA798AD1C2B448B586E16158B0FBFB99CEE5DD0DFB731649C
+identity=exact camera account tuple matched by the read-only probe; gateway inventory contained one matching entry per model; firmware absent from inventory
+test_scope=one selected candidate at a time; metadata-only initial inventory; one selected streams_for; channel=0; audio=false; C400 quality=3; Mi360 quality=2; PTZ/settings/firewall changes=none
+c400_direct=2026-11-15 06:39:11 UTC; CS2/TCP open succeeded; first raw media read timed out after 8 seconds; frames=0; payload_bytes=0
+c400_gateway_console=clean extraction and loopback UI HTTP 200; only C400 exposed; gateway session opened CS2/UDP after media_transport=auto; first media read timed out; UI stayed retrying/video_ready=false/frames=0; FFmpeg preview not started
+c400_transport=latest direct requested TCP but gateway selected UDP; current profile does not pin transport. Earlier current-v0.2.7 gateway TCP read also timed out; see ../../.test-env/evidence/c400-selected-stream-live-20261115-corrected.log
+c400_direct_log=../../.test-env/evidence/candidate-c400-direct-paired-20261115.log
+c400_gateway_log=../../.test-env/evidence/candidate-c400-gateway-console-paired-20261115.log
+mi360_direct=2026-11-15 06:37:06 UTC; CS2/UDP open succeeded; first raw media read timed out after 8 seconds; frames=0; payload_bytes=0
+mi360_gateway_console=clean extraction and loopback UI HTTP 200; only Mi 360 exposed; gateway session opened CS2/UDP; first media read timed out; UI stayed retrying/video_ready=false/frames=0; FFmpeg preview not started
+mi360_direct_log=../../.test-env/evidence/candidate-mi360-direct-paired-20261115.log
+mi360_gateway_log=../../.test-env/evidence/candidate-mi360-gateway-console-20261115.log
+comparison_log=../../.test-env/evidence/candidate-live-preview-comparison-20261115-final.log
+historical_success=2026-11-14 direct probes got three H.265 frames for both; one earlier Mi 360 gateway run reached RTSP ready. Current runs did not reproduce those results.
+support_status=both models remain experimental video-only; no dependable preview established; firmware unverified; no PTZ or settings writes
+clean_zip_smoke=PASS: final fresh extraction; mock console GET-only root/app.js/status/capabilities/events/record-files all returned HTTP 200; zero POSTs; no gateway/camera contact; see ../../.test-env/evidence/candidate-v028-clean-package-smoke-20261115.log
+
+## v0.2.9 documentation update: explicit C400 CS2/TCP and same-transport read-only check — 2026-11-15
+package_revision=documentation-only; Windows console executable remains v0.2.7; updated gateway executable is a separate test artifact and is not bundled in this ZIP
+gateway_build_command=C:\Apps\go\bin\go.exe build -trimpath -o .test-env/c201-pilot/win-gateway/xlg-gateway-v0.2.8-c400-tcp.exe ./cmd/gateway
+gateway_exe_sha256=BC6C2AC06BBCDE3CBB4CFD7C966239E2CB25F030CC850800AFAFCEF27257E26B
+candidate_profile_tests=PASS: C400 TCP, Mi 360 UDP; both profiles remain video-only and require explicit test mode
+candidate_profile_test_log=../../.test-env/evidence/candidate-c400-profile-targeted-go-20261115.log
+candidate_provider_transport_test=PASS: selected profile transport, model, channel 0, quality and audio-off passed to session opener
+candidate_provider_test_log=../../.test-env/evidence/candidate-c400-provider-targeted-go-20261115.log
+c400_direct=2026-11-15 07:00:09 UTC; CS2/TCP open; first media read timed out; frames=0; payload_bytes=0; quality=3; channel=0; audio=false; PTZ disabled
+c400_direct_log=../../.test-env/evidence/candidate-c400-direct-tcp-paired-20261115.log
+c400_gateway_console=2026-11-15 07:01 UTC; clean-extracted console; metadata-only inventory opened zero sessions; selected-only C400; CS2/TCP negotiation/open succeeded; first media read timed out; retrying; video_ready=false; frames=0; FFmpeg preview not started
+c400_gateway_console_log=../../.test-env/evidence/candidate-c400-gateway-tcp-console-20261115.log
+c400_gateway_console_sha256=B546456F706EBF9C8B26C9B12CF66AE63788B193B331AE04A0FBD826A3D59CA5
+c400_gateway_test_sha256=BC6C2AC06BBCDE3CBB4CFD7C966239E2CB25F030CC850800AFAFCEF27257E26B
+mi360_latest=not rerun in this revision; latest same-transport direct and gateway CS2/UDP runs both timed out before first media; remain experimental/test-mode-only
+live_writes=PTZ=0 settings=0 firewall=0
+release_zip=dist/c201-lab-prototype-20261115-v0.2.9-c400-tcp-results.zip
+clean_zip_smoke=PASS: final fresh extraction; Start-Demo.ps1 and GET-only Smoke-Test.ps1 on loopback; no gateway/camera contact
+clean_zip_smoke_evidence=../../.test-env/evidence/candidate-v029-clean-package-smoke-20261115.log
+
+## v0.2.10 documentation update: explicit experimental-profile launch instructions — 2026-11-15
+gateway_environment_variable=XLG_XIAOMI_PROFILE_TEST_MODE
+gateway_enable_value=true (requires gateway restart; parsed as Go boolean)
+gateway_disable_value=false or unset (restart gateway; lab launcher omits -EnableExperimentalProfiles and writes false)
+gateway_test_launcher=.test-env/c201-pilot/win-gateway/start-host-gateway.ps1 -ExecutablePath .\xiaomi-diagnostic-console\dist\xlg-gateway-v0.2.8-c400-tcp.exe -EnableExperimentalProfiles
+separate_gateway_build=dist/xlg-gateway-v0.2.8-c400-tcp.exe (not bundled in console ZIP)
+separate_gateway_build_sha256=BC6C2AC06BBCDE3CBB4CFD7C966239E2CB25F030CC850800AFAFCEF27257E26B
+release_zip=dist/c201-lab-prototype-20261115-v0.2.10-experimental-profile-instructions.zip
+zip_content_inspection=PASS: final fresh extraction; required-setting, enable/disable instructions, separate build path and SHA-256 assertions
+zip_content_inspection_evidence=../../.test-env/evidence/candidate-v0210-zip-content-inspection-20261115.log
+
+## v0.2.11 documentation update: extracted-build paths and live-console configuration — 2026-11-15
+repo_root_gateway_path=.\xiaomi-diagnostic-console\dist\xlg-gateway-v0.2.8-c400-tcp.exe
+clean_extracted_zip_gateway_path=keep ZIP and EXE together in dist; extract ZIP to child folder; use ..\xlg-gateway-v0.2.8-c400-tcp.exe from extracted folder
+gateway_api_config=Set console gateway_url to exact GATEWAY_API printed by launcher; API port is dynamically selected on each run
+gateway_token_config=Set console token_file to <RUN_ROOT>\private\api-token.txt printed through RUN_ROOT; protected user-only file
+rtsp_allowlist_config=Set allowed_rtsp_hosts to GATEWAY_RTSP_HOST without its separate port
+experiment_switch_config=XLG_XIAOMI_PROFILE_TEST_MODE=true; false/unset and restart to disable
+separate_gateway_build_sha256=BC6C2AC06BBCDE3CBB4CFD7C966239E2CB25F030CC850800AFAFCEF27257E26B
+release_zip=dist/c201-lab-prototype-20261115-v0.2.11-gateway-connection-instructions.zip
+zip_content_inspection=PASS: final fresh extraction; repo and extracted-folder paths, launcher output values, and companion build digest assertions
+zip_content_inspection_evidence=../../.test-env/evidence/candidate-v0211-zip-content-inspection-20261115.log
+
+## v0.2.12 documentation update: valid JSON token_file example — 2026-11-15
+token_file_json=forward-slash path string; convert RUN_ROOT backslashes to slashes and append /private/api-token.txt
+token_file_example=valid JSON object; replace sample port, RUN_ID, and RTSP host with current launcher output
+release_zip=dist/c201-lab-prototype-20261115-v0.2.12-json-token-path.zip
+zip_content_inspection=PASS: clean extraction; token_file JSON parses and uses forward slashes; RUN_ROOT formula, other paths and companion build digest verified
+zip_content_inspection_evidence=../../.test-env/evidence/candidate-v0212-zip-content-inspection-20261115.log
+
+

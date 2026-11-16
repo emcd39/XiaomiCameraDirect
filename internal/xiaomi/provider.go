@@ -42,6 +42,7 @@ const (
 	defaultRTSPPort   = 8554
 	defaultFFmpeg     = "ffmpeg"
 	frameReadyTimeout = 20 * time.Second
+	inventoryTimeout  = 6 * time.Second
 	snapshotTimeout   = 12 * time.Second
 	maxSnapshotBytes  = 8 << 20
 )
@@ -52,6 +53,7 @@ var (
 	ErrCameraNotFound        = errors.New("Xiaomi camera was not found in the loaded inventory")
 	ErrCameraUnavailable     = errors.New("Xiaomi camera is unavailable")
 	ErrInvalidCameraSettings = errors.New("Xiaomi camera returned an invalid settings response")
+	ErrInvalidCameraStorage  = errors.New("Xiaomi camera returned an invalid storage response")
 	ErrUnsupportedCamera     = errors.New("Xiaomi camera model is not supported")
 	ErrUnsupportedDirection  = errors.New("Xiaomi PTZ direction is not supported")
 )
@@ -60,6 +62,7 @@ type Config struct {
 	UserID                   string
 	Region                   string
 	Token                    string
+	ProfileFile              string
 	AdvertiseHost            string
 	RTSPListen               string
 	RTSPPort                 int
@@ -76,13 +79,14 @@ func ConfigFromEnv() (Config, bool, error) {
 		UserID:             strings.TrimSpace(os.Getenv("XLG_XIAOMI_USER_ID")),
 		Region:             strings.TrimSpace(os.Getenv("XLG_XIAOMI_REGION")),
 		Token:              os.Getenv("XLG_XIAOMI_TOKEN"),
+		ProfileFile:        strings.TrimSpace(os.Getenv("XLG_XIAOMI_PROFILE_FILE")),
 		AdvertiseHost:      strings.TrimSpace(os.Getenv("XLG_RTSP_ADVERTISE_HOST")),
 		RTSPListen:         strings.TrimSpace(os.Getenv("XLG_RTSP_LISTEN")),
 		FFmpegPath:         strings.TrimSpace(os.Getenv("XLG_FFMPEG_PATH")),
 		LocalMediaNetworks: strings.TrimSpace(os.Getenv("XLG_XIAOMI_LOCAL_MEDIA_NETWORKS")),
 	}
 	localMediaMode := strings.TrimSpace(os.Getenv("XLG_XIAOMI_LOCAL_MEDIA_REQUIRED"))
-	configured := cfg.UserID != "" || cfg.Region != "" || cfg.Token != "" || localMediaMode != "" || cfg.LocalMediaNetworks != ""
+	configured := cfg.UserID != "" || cfg.Region != "" || cfg.Token != "" || cfg.ProfileFile != "" || localMediaMode != "" || cfg.LocalMediaNetworks != ""
 	if !configured {
 		return Config{}, false, nil
 	}
@@ -134,6 +138,7 @@ func ConfigFromEnv() (Config, bool, error) {
 type Provider struct {
 	cfg                Config
 	account            *cloud.Account
+	miotGetContext     func(context.Context, string, []cloud.MiotProp) (json.RawMessage, error)
 	deviceInventory    deviceInventory
 	missSessionSource  missSessionProvider
 	relay              *streamrtsp.Relay
@@ -158,7 +163,7 @@ type cameraSession interface {
 	Read() (*stream.Frame, error)
 	Close()
 	Protocol() string
-	DiagnosticMotorStepObserved(string, func()) (bool, string)
+	DiagnosticMotorOperationObserved(int, string, func()) (bool, string)
 }
 
 type missSessionProvider interface {
@@ -166,7 +171,11 @@ type missSessionProvider interface {
 }
 
 type deviceInventory interface {
-	Devices() ([]*cloud.Device, error)
+	DevicesContext(context.Context) ([]*cloud.Device, error)
+}
+
+type profiledDeviceInventory interface {
+	DevicesWithCameraModelsContext(context.Context, []string) ([]*cloud.Device, error)
 }
 
 type liveCameraSession struct {
@@ -262,8 +271,8 @@ func (s *liveCameraSession) CameraSessionDiagnostics(ctx context.Context) (backe
 		AudioRequested: stats.AudioAsked,
 	}, ctx.Err()
 }
-func (s *liveCameraSession) DiagnosticMotorStepObserved(direction string, onWrite func()) (bool, string) {
-	result := s.session.DiagnosticMotorStepObserved(direction, onWrite)
+func (s *liveCameraSession) DiagnosticMotorOperationObserved(operation int, cameraLabel string, onWrite func()) (bool, string) {
+	result := s.session.DiagnosticMotorOperationObserved(operation, cameraLabel, onWrite)
 	return result.WriteSucceeded(), result.SanitizedLine()
 }
 
@@ -535,6 +544,15 @@ func safeSessionProtocol(value string) string {
 	return "unknown"
 }
 
+func safeCameraProfileID(value string) string {
+	switch value {
+	case profiles.C201ID, profiles.C400TestID, profiles.Mi360TestID, profiles.AW300TestID:
+		return value
+	default:
+		return "unknown"
+	}
+}
+
 func safeSessionPeerClass(value string) string {
 	switch value {
 	case "loopback_ip", "private_ip", "public_ip", "hostname_unverified", "unknown":
@@ -566,6 +584,7 @@ type cameraPath interface {
 	URL(string, int) (string, error)
 	Ready() bool
 	ReadySignal() <-chan struct{}
+	SourceFormat() *model.VideoFormat
 	WriteAccessUnit([]byte, int64, bool) error
 	Close()
 }
@@ -574,6 +593,8 @@ type cameraSessionRun struct {
 	session    cameraSession
 	path       cameraPath
 	generation string
+	profileID  string
+	videoCodec string
 	ending     chan struct{} // closed under cameraSource.mu when this run begins termination
 }
 
@@ -625,6 +646,14 @@ func New(cfg Config) (*Provider, error) {
 	if cfg.FFmpegPath == "" {
 		cfg.FFmpegPath = defaultFFmpeg
 	}
+	profileRegistry := cameraProfiles
+	if cfg.ProfileFile != "" {
+		var err error
+		profileRegistry, err = profiles.LoadFile(cameraProfiles, cfg.ProfileFile)
+		if err != nil {
+			return nil, err
+		}
+	}
 	var localMediaNetworks []localmedia.AllowedNetwork
 	if cfg.LocalMediaRequired {
 		parsed, err := localmedia.ParseAllowedNetworks(cfg.LocalMediaNetworks)
@@ -646,8 +675,8 @@ func New(cfg Config) (*Provider, error) {
 	}
 	log.Printf("xiaomi_backend event=account_restore result=ok")
 	return &Provider{
-		cfg: cfg, account: account, deviceInventory: account, missSessionSource: account, relay: relay, sources: make(map[model.CameraID]*cameraSource),
-		localMediaNetworks: localMediaNetworks, routeResolver: localmedia.SystemRouteResolver{},
+		cfg: cfg, account: account, miotGetContext: account.MiotGetContext, deviceInventory: account, missSessionSource: account, relay: relay, sources: make(map[model.CameraID]*cameraSource),
+		profileRegistry: profileRegistry, localMediaNetworks: localMediaNetworks, routeResolver: localmedia.SystemRouteResolver{},
 	}, nil
 }
 
@@ -657,6 +686,9 @@ func restoreFailureClass(err error) string {
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "timeout"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
 	}
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
@@ -689,9 +721,12 @@ func (p *Provider) Cameras(ctx context.Context) ([]model.Camera, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	devices, refreshed, sequence, err := p.cameraDevices()
+	devices, refreshed, sequence, err := p.cameraDevices(ctx)
 	if err != nil {
 		return nil, ErrCameraUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	return p.publishCameras(devices, refreshed, sequence)
 }
@@ -722,23 +757,32 @@ func (p *Provider) publishCameras(devices []*cloud.Device, refreshed bool, seque
 		p.loaded = time.Now()
 	}
 	for _, device := range devices {
-		if device == nil || !device.IsCamera() {
+		if device == nil {
 			continue
 		}
 		match, supported := p.profileForDevice(device)
+		videoSupported := supported && match.Supports(profiles.FeatureVideo) && match.Profile.SupportsManagedSession()
+		profiledCamera := videoSupported && p.cfg.TestExperimentalProfiles && match.Profile.Experimental && match.RegionKnown
+		if !device.IsCamera() && !profiledCamera {
+			continue
+		}
 		id := cameraID(device.Did)
 		camera := model.Camera{
 			ID:       id,
 			Name:     cameraName(device),
 			Model:    device.Model,
 			ModelID:  device.Model,
-			Selected: supported && match.Profile.AutoSelect && match.Supports(profiles.FeatureVideo),
+			Selected: videoSupported && match.Profile.AutoSelect,
 			Video:    model.VideoStatus{State: model.VideoUnsupported, Reason: model.ErrorUnsupportedModel},
 			Control:  model.ControlStatus{State: model.ControlUnsupported},
 		}
-		if supported && match.Supports(profiles.FeatureVideo) {
-			camera.Capabilities.Video = match.Supports(profiles.FeatureVideo)
+		if videoSupported {
+			camera.Capabilities.Video = true
 			camera.Capabilities.Snapshot = match.Supports(profiles.FeatureSnapshot)
+			camera.Capabilities.PTZ = match.Supports(profiles.FeaturePTZ) && match.Profile.SupportsManagedPTZ()
+			if camera.Capabilities.PTZ {
+				camera.Control = model.ControlStatus{State: model.ControlReady}
+			}
 			camera.Support = profileSupportEvidence(match)
 			source := p.sources[id]
 			if source == nil || !sameCameraSourceIdentity(source.device, device) {
@@ -822,6 +866,15 @@ func c201SupportEvidence() *model.CameraSupport {
 				RequiresCloud:  []string{"account_auth", "inventory", "settings_read"},
 				EvidenceRef:    ".test-env/evidence/test-local-20261112-162635-f49fca83.log#late-settings",
 			},
+			"sd_capacity": {
+				Implementation: "implemented",
+				Validation:     "offline",
+				Path:           "cloud",
+				Availability:   "unknown",
+				Reason:         model.ErrorUnverifiedFirmware,
+				RequiresCloud:  []string{"account_auth", "inventory", "settings_read"},
+				EvidenceRef:    "xiaomi-diagnostic-console/docs/TEST_REPORT.md#c201-sd-evidence",
+			},
 		},
 	}
 }
@@ -836,14 +889,18 @@ func profileSupportEvidence(match profiles.Match) *model.CameraSupport {
 	features := make(map[string]model.FeatureSupport)
 	for _, feature := range []profiles.Feature{
 		profiles.FeatureVideo, profiles.FeatureSnapshot, profiles.FeaturePTZ,
-		profiles.FeatureSettingsRead, profiles.FeatureSessionDiagnostics,
+		profiles.FeatureSettingsRead, profiles.FeatureStorageRead, profiles.FeatureSessionDiagnostics,
 	} {
 		evidence := model.FeatureSupport{
 			Implementation: "research", Validation: "none", Path: "unknown",
 			Availability: "unavailable", Reason: model.ErrorUnsupportedModel,
 			RequiresCloud: []string{},
 		}
-		if match.Supports(feature) {
+		supported := match.Supports(feature)
+		if feature == profiles.FeaturePTZ {
+			supported = supported && match.Supports(profiles.FeatureVideo) && match.Profile.SupportsManagedPTZ()
+		}
+		if supported {
 			evidence.Availability = "unknown"
 			evidence.Reason = model.ErrorUnverifiedFirmware
 		}
@@ -854,7 +911,7 @@ func profileSupportEvidence(match profiles.Match) *model.CameraSupport {
 
 func unsupportedModelSupportEvidence() *model.CameraSupport {
 	features := make(map[string]model.FeatureSupport)
-	for _, name := range []string{"video", "snapshot", "audio", "ptz", "presets", "camera_settings_read"} {
+	for _, name := range []string{"video", "snapshot", "audio", "ptz", "presets", "camera_settings_read", "sd_capacity", "sd_recordings"} {
 		features[name] = model.FeatureSupport{
 			Implementation: "research",
 			Validation:     "none",
@@ -884,13 +941,16 @@ func (p *Provider) profileForDevice(device *cloud.Device) (profiles.Match, bool)
 		}
 	}
 	match, err := registry.Resolve(device.Model, "", region)
-	if err != nil || match.Profile.Experimental && (p == nil || !p.cfg.TestExperimentalProfiles) {
+	if err != nil {
+		return profiles.Match{}, false
+	}
+	if match.Profile.Experimental && (p == nil || !p.cfg.TestExperimentalProfiles || !match.RegionKnown) {
 		return profiles.Match{}, false
 	}
 	return match, true
 }
 
-func (p *Provider) cameraDevices() ([]*cloud.Device, bool, uint64, error) {
+func (p *Provider) cameraDevices(ctx context.Context) ([]*cloud.Device, bool, uint64, error) {
 	// The request sequence is assigned before either a cache read or a remote
 	// refresh, so cache-backed results take part in stale-publication checks too.
 	p.mu.Lock()
@@ -905,9 +965,27 @@ func (p *Provider) cameraDevices() ([]*cloud.Device, bool, uint64, error) {
 	if p.deviceInventory == nil {
 		return nil, false, sequence, ErrCameraUnavailable
 	}
-	devices, err := p.deviceInventory.Devices()
+	// Keep slow cloud inventory inside the console's eight-second HTTP
+	// budget, and cancel the Xiaomi request when its caller disconnects.
+	ctx, cancel := context.WithTimeout(ctx, inventoryTimeout)
+	defer cancel()
+	var devices []*cloud.Device
+	var err error
+	if p.cfg.TestExperimentalProfiles {
+		if profiledInventory, ok := p.deviceInventory.(profiledDeviceInventory); ok {
+			registry := p.profileRegistry
+			if registry == nil {
+				registry = cameraProfiles
+			}
+			devices, err = profiledInventory.DevicesWithCameraModelsContext(ctx, registry.ExperimentalModelIDs())
+		} else {
+			devices, err = p.deviceInventory.DevicesContext(ctx)
+		}
+	} else {
+		devices, err = p.deviceInventory.DevicesContext(ctx)
+	}
 	if err != nil {
-		log.Printf("xiaomi_backend event=inventory result=error")
+		log.Printf("xiaomi_backend event=inventory result=error reason=%s", restoreFailureClass(err))
 		return nil, false, sequence, err
 	}
 	log.Printf("xiaomi_backend event=inventory result=ok camera_count=%d", len(devices))
@@ -958,11 +1036,39 @@ var c201ReadOnlyProperties = []struct {
 	{name: "pet_detection", siid: 8, piid: 3, kind: "bool"},
 }
 
+var c201StorageReadOnlyProperties = []struct {
+	name string
+	siid int
+	piid int
+	max  int64
+}{
+	{name: "card_status", siid: 3, piid: 1, max: 100},
+	{name: "total", siid: 3, piid: 2, max: 1 << 31},
+	{name: "free", siid: 3, piid: 3, max: 1 << 31},
+	{name: "used", siid: 3, piid: 4, max: 1 << 31},
+}
+
 type miotPropertyResult struct {
 	Siid  int             `json:"siid"`
 	Piid  int             `json:"piid"`
 	Code  *int            `json:"code"`
 	Value json.RawMessage `json:"value"`
+}
+
+// The cloud client removes the outer API envelope. Some responses still
+// contain a nested result object, while others return the property array.
+func miotPropertyResults(raw json.RawMessage) []miotPropertyResult {
+	var results []miotPropertyResult
+	if json.Unmarshal(raw, &results) == nil && results != nil {
+		return results
+	}
+	var wrapped struct {
+		Result []miotPropertyResult `json:"result"`
+	}
+	if json.Unmarshal(raw, &wrapped) != nil {
+		return nil
+	}
+	return wrapped.Result
 }
 
 // CameraSettings reads only the fixed C201 property allowlist. It uses the
@@ -999,14 +1105,12 @@ func (p *Provider) CameraSettings(ctx context.Context, id model.CameraID) (backe
 	for _, property := range c201ReadOnlyProperties {
 		props = append(props, cloud.MiotProp{Siid: property.siid, Piid: property.piid})
 	}
-	raw, err := p.account.MiotGetContext(ctx, device.Did, props)
+	raw, err := p.readMIoTProperties(ctx, device.Did, props)
 	if err != nil {
 		return backend.CameraSettings{}, ErrCameraUnavailable
 	}
-	var response struct {
-		Result []miotPropertyResult `json:"result"`
-	}
-	if err := json.Unmarshal(raw, &response); err != nil || response.Result == nil {
+	results := miotPropertyResults(raw)
+	if results == nil {
 		return backend.CameraSettings{}, ErrInvalidCameraSettings
 	}
 	propertySpecs := make(map[[2]int]struct {
@@ -1020,7 +1124,7 @@ func (p *Provider) CameraSettings(ctx context.Context, id model.CameraID) (backe
 		}{name: property.name, kind: property.kind}
 	}
 	values := make(map[string]backend.SettingValue, len(c201ReadOnlyProperties))
-	for _, result := range response.Result {
+	for _, result := range results {
 		property, requested := propertySpecs[[2]int{result.Siid, result.Piid}]
 		if !requested {
 			continue
@@ -1061,7 +1165,109 @@ func (p *Provider) CameraSettings(ctx context.Context, id model.CameraID) (backe
 	}, nil
 }
 
+// CameraStorage returns only the C201 read-only memory-card properties. Values
+// remain raw because the C201 response units and status mapping are unverified.
+func (p *Provider) CameraStorage(ctx context.Context, id model.CameraID) (backend.CameraStorageSnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return backend.CameraStorageSnapshot{}, err
+	}
+	p.mu.RLock()
+	devices := append([]*cloud.Device(nil), p.devices...)
+	loaded := !p.loaded.IsZero()
+	closed := p.closed
+	p.mu.RUnlock()
+	if closed || !loaded {
+		return backend.CameraStorageSnapshot{}, ErrCameraUnavailable
+	}
+	var device *cloud.Device
+	for _, candidate := range devices {
+		if candidate != nil && candidate.IsCamera() && cameraID(candidate.Did) == id {
+			device = candidate
+			break
+		}
+	}
+	if device == nil {
+		return backend.CameraStorageSnapshot{}, ErrCameraNotFound
+	}
+	match, supported := p.profileForDevice(device)
+	if device.Model != profiles.ModelC201 || !supported || !match.Supports(profiles.FeatureStorageRead) {
+		return backend.CameraStorageSnapshot{}, ErrUnsupportedCamera
+	}
+	props := make([]cloud.MiotProp, 0, len(c201StorageReadOnlyProperties))
+	for _, property := range c201StorageReadOnlyProperties {
+		props = append(props, cloud.MiotProp{Siid: property.siid, Piid: property.piid})
+	}
+	raw, err := p.readMIoTProperties(ctx, device.Did, props)
+	if err != nil {
+		return backend.CameraStorageSnapshot{}, ErrCameraUnavailable
+	}
+	values, err := parseC201StorageProperties(raw)
+	if err != nil {
+		return backend.CameraStorageSnapshot{}, ErrInvalidCameraStorage
+	}
+	return backend.CameraStorageSnapshot{ObservedAt: time.Now().UTC(), Properties: values}, nil
+}
+
+func (p *Provider) readMIoTProperties(ctx context.Context, did string, props []cloud.MiotProp) (json.RawMessage, error) {
+	if p.miotGetContext != nil {
+		return p.miotGetContext(ctx, did, props)
+	}
+	if p.account == nil {
+		return nil, ErrCameraUnavailable
+	}
+	return p.account.MiotGetContext(ctx, did, props)
+}
+
+func parseC201StorageProperties(raw json.RawMessage) (map[string]backend.StoragePropertyValue, error) {
+	results := miotPropertyResults(raw)
+	if results == nil {
+		return nil, ErrInvalidCameraStorage
+	}
+	specs := make(map[[2]int]struct {
+		name string
+		max  int64
+	}, len(c201StorageReadOnlyProperties))
+	for _, property := range c201StorageReadOnlyProperties {
+		specs[[2]int{property.siid, property.piid}] = struct {
+			name string
+			max  int64
+		}{name: property.name, max: property.max}
+	}
+	values := make(map[string]backend.StoragePropertyValue, len(c201StorageReadOnlyProperties))
+	for _, result := range results {
+		property, requested := specs[[2]int{result.Siid, result.Piid}]
+		if !requested {
+			continue
+		}
+		if result.Code == nil {
+			return nil, ErrInvalidCameraStorage
+		}
+		if _, duplicate := values[property.name]; duplicate {
+			return nil, ErrInvalidCameraStorage
+		}
+		value := append(json.RawMessage(nil), result.Value...)
+		if *result.Code != 0 {
+			value = nil
+		} else if len(value) > 0 && !bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			var numeric int64
+			if err := json.Unmarshal(value, &numeric); err != nil || numeric < 0 || numeric > property.max {
+				return nil, ErrInvalidCameraStorage
+			}
+		}
+		values[property.name] = backend.StoragePropertyValue{Code: *result.Code, Value: value, Unit: nil}
+	}
+	return values, nil
+}
+
 func (p *Provider) Streams(ctx context.Context, id model.CameraID) ([]backend.StreamEndpoint, error) {
+	return p.streamEndpoints(ctx, id, false)
+}
+
+func (p *Provider) ReadyStreams(ctx context.Context, id model.CameraID) ([]backend.StreamEndpoint, error) {
+	return p.streamEndpoints(ctx, id, true)
+}
+
+func (p *Provider) streamEndpoints(ctx context.Context, id model.CameraID, wait bool) ([]backend.StreamEndpoint, error) {
 	source := p.source(id)
 	if source == nil {
 		return nil, ErrUnsupportedCamera
@@ -1070,7 +1276,11 @@ func (p *Provider) Streams(ctx context.Context, id model.CameraID) ([]backend.St
 	if !supported || !match.Supports(profiles.FeatureVideo) {
 		return nil, ErrUnsupportedCamera
 	}
-	path, err := source.ensurePath(ctx)
+	open := source.ensurePath
+	if wait {
+		open = source.ensureReady
+	}
+	path, err := open(ctx)
 	if err != nil {
 		return nil, ErrCameraUnavailable
 	}
@@ -1127,9 +1337,9 @@ func (p *Provider) Snapshot(ctx context.Context, id model.CameraID) ([]byte, err
 	return data, nil
 }
 
-// Step sends a short camera-directed step through the same live CS2 session.
-// It is deliberately not advertised to Home Assistant until C201 movement is
-// physically verified.
+// Step sends one profile-mapped, single-step operation through the already
+// active camera session. A profile is advertised only when it declares a
+// driver and direction mapping; experimental profiles still require opt-in.
 func (p *Provider) Step(ctx context.Context, id model.CameraID, direction string) error {
 	p.mu.RLock()
 	source := p.sources[id]
@@ -1152,7 +1362,7 @@ func (p *Provider) Step(ctx context.Context, id model.CameraID, direction string
 			return ErrCameraNotFound
 		}
 		match, supported := p.profileForDevice(knownCamera)
-		if !supported || !match.Supports(profiles.FeaturePTZ) {
+		if !supported || !match.Supports(profiles.FeatureVideo) || !match.Supports(profiles.FeaturePTZ) || !match.Profile.SupportsManagedPTZ() {
 			return ErrUnsupportedCamera
 		}
 		return ErrCameraUnavailable
@@ -1161,11 +1371,15 @@ func (p *Provider) Step(ctx context.Context, id model.CameraID, direction string
 		return ErrUnsupportedCamera
 	}
 	match, supported := p.profileForDevice(source.device)
-	if !supported || !match.Supports(profiles.FeaturePTZ) {
+	if !supported || !match.Supports(profiles.FeatureVideo) || !match.Supports(profiles.FeaturePTZ) || !match.Profile.SupportsManagedPTZ() {
 		return ErrUnsupportedCamera
 	}
 	if direction != "left" && direction != "right" && direction != "up" && direction != "down" {
 		return ErrUnsupportedDirection
+	}
+	operation, ok := match.Profile.PTZOperation(direction)
+	if !ok {
+		return ErrUnsupportedCamera
 	}
 	source.lifecycleMu.Lock()
 	defer source.lifecycleMu.Unlock()
@@ -1184,7 +1398,7 @@ func (p *Provider) Step(ctx context.Context, id model.CameraID, direction string
 		return err
 	}
 	run := source.session
-	if source.closed || run == nil || run.isEnding() || run.session == nil || run.path == nil || source.path != run.path || !run.path.Ready() {
+	if source.closed || run == nil || run.isEnding() || run.session == nil || run.path == nil || source.path != run.path {
 		source.mu.Unlock()
 		p.mu.RUnlock()
 		return ErrCameraUnavailable
@@ -1196,7 +1410,7 @@ func (p *Provider) Step(ctx context.Context, id model.CameraID, direction string
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	writeSucceeded, sanitizedLine := run.session.DiagnosticMotorStepObserved(direction, nil)
+	writeSucceeded, sanitizedLine := run.session.DiagnosticMotorOperationObserved(operation, "MISS", nil)
 	log.Print(sanitizedLine)
 	if !writeSucceeded {
 		return errors.New("camera control failed")
@@ -1214,6 +1428,10 @@ func (p *Provider) source(id model.CameraID) *cameraSource {
 // background. Home Assistant can add the camera before the first media packet
 // arrives, while snapshots use ensureReady to wait for an actual stream.
 func (s *cameraSource) ensurePath(ctx context.Context) (cameraPath, error) {
+	match, supported := s.provider.profileForDevice(s.device)
+	if !supported || !match.Supports(profiles.FeatureVideo) || !match.Profile.SupportsManagedSession() {
+		return nil, ErrUnsupportedCamera
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -1238,7 +1456,7 @@ func (s *cameraSource) ensurePath(ctx context.Context) (cameraPath, error) {
 				return nil, ctx.Err()
 			}
 		}
-		path, err := s.provider.relay.NewPath()
+		path, err := s.provider.relay.NewPath(match.Profile.VideoCodec)
 		if err != nil {
 			s.mu.Unlock()
 			return nil, errors.New("local RTSP path could not be created")
@@ -1270,14 +1488,18 @@ func (s *cameraSource) ensureReady(ctx context.Context) (cameraPath, error) {
 	}
 	s.mu.Lock()
 	done := s.sessionDone
+	current := s.path == path
 	s.mu.Unlock()
-	if done == nil {
+	if !current || done == nil {
 		return nil, ErrCameraUnavailable
 	}
 	timer := time.NewTimer(frameReadyTimeout)
 	defer timer.Stop()
 	select {
 	case <-path.ReadySignal():
+		if !path.Ready() {
+			return nil, ErrCameraUnavailable
+		}
 		return path, nil
 	case <-done:
 		return nil, ErrCameraUnavailable
@@ -1290,15 +1512,18 @@ func (s *cameraSource) ensureReady(ctx context.Context) (cameraPath, error) {
 
 func (s *cameraSource) videoStatus() model.VideoStatus {
 	s.mu.Lock()
-	path, lastErr := s.path, s.lastErr
+	path, lastErr, run := s.path, s.lastErr, s.session
+	sessionActive := run != nil && run.session != nil && run.path != nil && run.path == path && !run.isEnding()
 	s.mu.Unlock()
-	if path != nil && path.Ready() {
-		return model.VideoStatus{State: model.VideoStreaming}
+	if path != nil {
+		if format := path.SourceFormat(); format != nil {
+			return model.VideoStatus{State: model.VideoStreaming, SessionActive: sessionActive, SourceFormat: format}
+		}
 	}
 	if lastErr != nil {
-		return model.VideoStatus{State: model.VideoRetrying, Reason: model.ErrorStreamTimeout}
+		return model.VideoStatus{State: model.VideoRetrying, Reason: model.ErrorStreamTimeout, SessionActive: sessionActive}
 	}
-	return model.VideoStatus{State: model.VideoIdle}
+	return model.VideoStatus{State: model.VideoIdle, SessionActive: sessionActive}
 }
 
 func (s *cameraSource) start(ctx context.Context, path cameraPath, done, starting chan struct{}) {
@@ -1315,22 +1540,24 @@ func (s *cameraSource) start(ctx context.Context, path cameraPath, done, startin
 		s.failStart(path, done, ErrUnsupportedCamera)
 		return
 	}
-	if match.Profile.ApplicationProtocol != "MISS" || match.Profile.MediaProtocol != "CS2" || match.Profile.VideoCodec != "H265" {
+	profileID := safeCameraProfileID(match.Profile.ID)
+	if !match.Profile.SupportsManagedSession() {
 		s.failStart(path, done, ErrUnsupportedCamera)
 		return
 	}
 	host := s.device.IP
 	if net.ParseIP(host) == nil {
-		log.Printf("xiaomi_backend event=camera_address result=unavailable")
+		log.Printf("xiaomi_backend event=camera_address result=unavailable model_profile=%s", profileID)
 		s.failStart(path, done, errors.New("camera local address is unavailable"))
 		return
 	}
 	opener := &providerSessionOpener{account: s.provider.missSessionSource, vendor: match.Profile.Vendor, open: s.provider.openMediaSession, config: stream.Config{
-		Host:    host,
-		Model:   match.Profile.ModelID,
-		Channel: match.Profile.Channel,
-		Quality: match.Profile.Quality,
-		Audio:   match.Profile.Audio,
+		Host:      host,
+		Transport: match.Profile.Transport,
+		Model:     match.Profile.ModelID,
+		Channel:   match.Profile.Channel,
+		Quality:   match.Profile.Quality,
+		Audio:     match.Profile.Audio,
 	}}
 	var opened localmedia.Session
 	var err error
@@ -1348,29 +1575,28 @@ func (s *cameraSource) start(ctx context.Context, path cameraPath, done, startin
 			ExpectedIP: host, ExpectedMAC: s.device.MAC, InventoryRevision: revision,
 		})
 		if err != nil {
-			log.Printf("xiaomi_backend event=local_media_preflight result=error reason=%s", localMediaFailureClass(err))
+			log.Printf("xiaomi_backend event=local_media_preflight result=error model_profile=%s reason=%s", profileID, localMediaFailureClass(err))
 			s.failStart(path, done, errors.New("local media policy rejected the camera session"))
 			return
 		}
 	} else {
 		if err := opener.Prepare(ctx, s.device.Did); err != nil {
-			log.Printf("xiaomi_backend event=session_negotiate result=error")
+			log.Printf("xiaomi_backend event=session_negotiate result=error model_profile=%s", profileID)
 			s.failStart(path, done, errors.New("camera session negotiation failed"))
 			return
 		}
 		opened, err = opener.Open(ctx, localmedia.SessionTarget{DID: s.device.Did, IP: net.ParseIP(host)})
 		if err != nil {
-			log.Printf("xiaomi_backend event=session_open result=error reason=%s", sessionFailureClass(err))
+			log.Printf("xiaomi_backend event=session_open result=error model_profile=%s reason=%s", profileID, sessionFailureClass(err))
 			s.failStart(path, done, errors.New("camera video session could not be opened"))
 			return
 		}
 	}
-	transport, _ := mediaTransportPreference(opener.miss.Vendor)
-	transportLabel := transport
+	transportLabel := match.Profile.Transport
 	if transportLabel == "" {
 		transportLabel = "auto"
 	}
-	log.Printf("xiaomi_backend event=session_negotiate result=ok vendor=%s media_transport=%s", opener.miss.Vendor, transportLabel)
+	log.Printf("xiaomi_backend event=session_negotiate result=ok model_profile=%s vendor=%s media_transport=%s", profileID, opener.miss.Vendor, transportLabel)
 	generation, err := newSessionGeneration()
 	if err != nil {
 		opened.Close()
@@ -1387,7 +1613,7 @@ func (s *cameraSource) start(ctx context.Context, path cameraPath, done, startin
 		s.failStart(path, done, errors.New("camera video session could not be opened"))
 		return
 	}
-	log.Printf("xiaomi_backend event=session_open result=ok transport=%s", session.Protocol())
+	log.Printf("xiaomi_backend event=session_open result=ok model_profile=%s transport=%s", profileID, session.Protocol())
 	s.mu.Lock()
 	if s.closed || s.path != path {
 		s.mu.Unlock()
@@ -1395,7 +1621,10 @@ func (s *cameraSource) start(ctx context.Context, path cameraPath, done, startin
 		s.failStart(path, done, ErrCameraUnavailable)
 		return
 	}
-	run := &cameraSessionRun{session: session, path: path, generation: generation, ending: make(chan struct{})}
+	run := &cameraSessionRun{
+		session: session, path: path, generation: generation, profileID: profileID,
+		videoCodec: match.Profile.VideoCodec, ending: make(chan struct{}),
+	}
 	s.session = run
 	s.lastErr = nil
 	s.recordDiagnosticEvent(backend.CameraDiagnosticRequest{}, "session_started", "ok", &backend.CameraSessionDiagnostics{
@@ -1581,6 +1810,11 @@ func (s *cameraSource) close() {
 
 func (s *cameraSource) readFrames(run *cameraSessionRun, done chan struct{}) {
 	defer close(done)
+	modelProfile := safeCameraProfileID(run.profileID)
+	var expectedCodec int32 = stream.CodecH265
+	if run.videoCodec == "H264" {
+		expectedCodec = stream.CodecH264
+	}
 	var terminal error
 	firstFrameLogged := false
 	for {
@@ -1592,23 +1826,23 @@ func (s *cameraSource) readFrames(run *cameraSessionRun, done chan struct{}) {
 		if frame == nil || frame.Kind != stream.KindVideo {
 			continue
 		}
-		if frame.Codec != stream.CodecH265 {
+		if frame.Codec != expectedCodec {
 			log.Printf("xiaomi_backend event=media_codec result=unsupported")
 			terminal = errors.New("unsupported codec")
 			break
 		}
 		wasReady := run.path.Ready()
 		if err := run.path.WriteAccessUnit(frame.Data, frame.PTS, frame.Keyframe); err != nil {
-			log.Printf("xiaomi_backend event=rtsp_publish result=error")
+			log.Printf("xiaomi_backend event=rtsp_publish result=error model_profile=%s", modelProfile)
 			terminal = err
 			break
 		}
 		if !firstFrameLogged {
 			firstFrameLogged = true
-			log.Printf("xiaomi_backend event=first_media result=ok codec=h265")
+			log.Printf("xiaomi_backend event=first_media result=ok model_profile=%s codec=%s", modelProfile, strings.ToLower(run.videoCodec))
 		}
 		if !wasReady && run.path.Ready() {
-			log.Printf("xiaomi_backend event=rtsp_description result=ready")
+			log.Printf("xiaomi_backend event=rtsp_description result=ready model_profile=%s", modelProfile)
 		}
 	}
 	// Publish the end of frame reception before logging or waiting for the
@@ -1616,10 +1850,10 @@ func (s *cameraSource) readFrames(run *cameraSessionRun, done chan struct{}) {
 	s.markSessionEnding(run)
 	if terminal != nil {
 		if errors.Is(terminal, stream.ErrClosed) {
-			log.Printf("xiaomi_backend event=session_end result=closed transport=%s", run.session.Protocol())
+			log.Printf("xiaomi_backend event=session_end result=closed model_profile=%s transport=%s", modelProfile, run.session.Protocol())
 		} else {
-			log.Printf("xiaomi_backend event=media_read result=error reason=%s transport=%s", sessionFailureClass(terminal), run.session.Protocol())
-			log.Printf("xiaomi_backend event=session_end result=error transport=%s", run.session.Protocol())
+			log.Printf("xiaomi_backend event=media_read result=error model_profile=%s reason=%s transport=%s", modelProfile, sessionFailureClass(terminal), run.session.Protocol())
+			log.Printf("xiaomi_backend event=session_end result=error model_profile=%s transport=%s", modelProfile, run.session.Protocol())
 		}
 	}
 	s.retireSession(run, terminal)

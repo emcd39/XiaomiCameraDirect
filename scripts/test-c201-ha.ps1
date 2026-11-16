@@ -28,7 +28,6 @@ $GatewayImage = "xlg-gateway-c201:$RunId"
 $HaImage = 'ghcr.io/home-assistant/home-assistant:2026.10.4'
 $HaDigest = 'sha256:23f4dfbb69ce76315dbc4de7915504f1c2dcecd7ca2648113a493a385972e133'
 $HaPort = $null
-$RtspPort = $null
 $StackCreated = $false
 $GatewayStarted = $false
 $HaStarted = $false
@@ -239,7 +238,7 @@ function Write-SanitizedGatewayDiagnostics {
         $eventCount = 0
         foreach ($line in $lines) {
             $text = [string]$line
-            $match = [regex]::Match($text, 'xiaomi_backend event=[a-z_]+ result=[a-z_]+(?: (?:transport|codec|camera_count|bytes|reason)=[A-Za-z0-9_-]+)*')
+            $match = [regex]::Match($text, 'xiaomi_backend event=[a-z_]+ result=[a-z_]+(?: (?:model_profile|transport|codec|camera_count|bytes|reason)=[A-Za-z0-9_+-]+)*|xiaomi_cs2 phase=(?:lan_search|punch) result=(?:ok|error) elapsed_ms=\d+ rejected_wrong_host=\d+ rejected_malformed=\d+ rejected_unmatched=\d+')
             if ($match.Success) {
                 Write-Evidence "DIAGNOSTIC $($match.Value)"
                 $eventCount++
@@ -273,7 +272,6 @@ try {
     $HaPassword = New-RandomHex 24
     $ApiToken = New-RandomHex 32
     $HaPort = Get-FreeLoopbackPort
-    $RtspPort = Get-FreeLoopbackPort
     # The E2E helper runs inside the Home Assistant container, so it must use
     # the container-local listener. The printed browser URL still uses $HaPort.
     $HaUrl = 'http://127.0.0.1:8123'
@@ -310,6 +308,14 @@ try {
     }
     Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/e2e/test_ha.py') -Destination (Join-Path $HaConfig 'tests/e2e/test_ha.py')
     Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/e2e/test_c201_ha.py') -Destination (Join-Path $HaConfig 'tests/e2e/test_c201_ha.py')
+    Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/e2e/ha_live_soak.py') -Destination (Join-Path $HaConfig 'tests/e2e/ha_live_soak.py')
+    Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/e2e/xlg_soak_live.py') -Destination (Join-Path $HaConfig 'tests/e2e/xlg_soak_live.py')
+    Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/e2e/test_hls_diagnostics.py') -Destination (Join-Path $HaConfig 'tests/e2e/test_hls_diagnostics.py')
+    foreach ($hlsFile in @('test_c201_ha.py', 'ha_live_soak.py', 'xlg_soak_live.py')) {
+        $hlsHelperSource = Join-Path $RepoRoot "tests/e2e/$hlsFile"
+        $hlsHelperCopy = Join-Path $HaConfig "tests/e2e/$hlsFile"
+        if ((Get-FileHash -LiteralPath $hlsHelperSource -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath $hlsHelperCopy -Algorithm SHA256).Hash) { throw "Copied HA HLS helper differs from current checkout: $hlsFile" }
+    }
     Write-Evidence 'HA_INTEGRATION_SOURCE=CURRENT_CHECKOUT'
     Write-Evidence 'XIAOMI_CREDENTIAL_SOURCE=WINDOWS_DPAPI_PROFILE'
     Write-Evidence 'MEDIA_SOURCE=CS2_C201_ONLY'
@@ -325,8 +331,7 @@ try {
     $StackCreated = $true
     $null = Invoke-Wslc 'Start managed gateway with private Xiaomi credentials' @(
         'run', '-d', '--name', $GatewayContainer, '--network', $Network, '--ip', $GatewayIP,
-        '--env-file', $gatewayEnv, '-v', "${GatewayData}:/data",
-        '-p', "127.0.0.1:${RtspPort}:8554/tcp", $GatewayImage,
+        '--env-file', $gatewayEnv, '-v', "${GatewayData}:/data", $GatewayImage,
         '-managed', '-listen', '0.0.0.0:8099'
     )
     $GatewayStarted = $true
@@ -361,7 +366,7 @@ try {
     Write-Evidence 'PHYSICAL_C201_SNAPSHOT=PASS'
     Write-Evidence "PHYSICAL_C201_STREAM_SECONDS=$SoakSeconds"
     Write-Evidence 'PHYSICAL_C201_RECOVERY=PASS'
-    Write-Evidence 'PHYSICAL_C201_PTZ=NOT_EXPOSED_MODEL_NOT_IN_VIEWER_MOTOR_LIST'
+    Write-Evidence 'PHYSICAL_C201_PTZ=NOT_EXERCISED'
     Write-Evidence 'RESULT=PASS'
 } catch {
     $Failure = $_
@@ -375,7 +380,6 @@ try {
         Write-Evidence "GATEWAY_CONTAINER=$GatewayContainer"
         Write-Evidence "NETWORK=$Network"
         Write-Evidence "LOCAL_HA_URL=http://127.0.0.1:$HaPort"
-        Write-Evidence "LOCAL_RTSP_LOOPBACK=rtsp://127.0.0.1:$RtspPort/<private-path>"
         Write-Host "HA_TEST_USERNAME=$HaUsername"
         Write-Host "HA_TEST_PASSWORD=$HaPassword"
         Write-Host "HA_TEST_URL=http://127.0.0.1:$HaPort"

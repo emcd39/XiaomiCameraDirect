@@ -11,10 +11,14 @@ ffmpeg -nostdin -hide_banner -loglevel error \
 rtsp_pid=$!
 python -u /app/onvif_mock.py &
 onvif_pid=$!
+python -u /app/frigate_api_mock.py &
+frigate_pid=$!
+mosquitto -c /app/mosquitto.conf &
+mqtt_pid=$!
 
 stop_children() {
-  kill "$rtsp_pid" "$onvif_pid" 2>/dev/null || true
-  wait "$rtsp_pid" "$onvif_pid" 2>/dev/null || true
+  kill "$rtsp_pid" "$onvif_pid" "$frigate_pid" "$mqtt_pid" 2>/dev/null || true
+  wait "$rtsp_pid" "$onvif_pid" "$frigate_pid" "$mqtt_pid" 2>/dev/null || true
 }
 trap stop_children TERM INT
 

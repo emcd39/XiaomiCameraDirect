@@ -37,8 +37,16 @@ type gatewayCamera struct {
 }
 
 type CameraOption struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Model         string `json:"model"`
+	Video         bool   `json:"video"`
+	VideoReady    bool   `json:"video_ready"`
+	VideoState    string `json:"video_state"`
+	SessionActive bool   `json:"session_active"`
+	Reason        string `json:"reason,omitempty"`
+	PTZ           bool   `json:"ptz"`
+	Selected      bool   `json:"selected"`
 }
 
 type InventorySummary struct {
@@ -46,9 +54,11 @@ type InventorySummary struct {
 	CameraCount        int            `json:"camera_count"`
 	C201Count          int            `json:"c201_count"`
 	StreamURLsDetected int            `json:"stream_urls_detected"`
+	Cameras            []CameraOption `json:"cameras"`
 	C201Cameras        []CameraOption `json:"c201_cameras"`
 	SelectedCameraID   string         `json:"selected_camera_id,omitempty"`
 	SessionReady       bool           `json:"session_ready"`
+	SessionActive      bool           `json:"session_active"`
 	SessionState       string         `json:"session_state,omitempty"`
 	FetchedAt          string         `json:"fetched_at,omitempty"`
 }
@@ -72,8 +82,14 @@ type managedInventoryCamera struct {
 	Model   string `json:"model"`
 	ModelID string `json:"model_id"`
 	Video   struct {
-		State string `json:"state"`
+		State         string `json:"state"`
+		Reason        string `json:"reason"`
+		SessionActive bool   `json:"session_active"`
 	} `json:"video"`
+	Capabilities *struct {
+		Video bool `json:"video"`
+		PTZ   bool `json:"ptz"`
+	} `json:"capabilities"`
 	Streams []struct {
 		ID       string `json:"id"`
 		Protocol string `json:"protocol"`
@@ -154,9 +170,10 @@ func (g *Gateway) do(ctx context.Context, method, endpoint string, body []byte, 
 func (g *Gateway) Status(ctx context.Context) GatewayStatus {
 	g.mu.RLock()
 	inv := g.inventorySummary
+	inv.Cameras = append([]CameraOption(nil), inv.Cameras...)
 	inv.C201Cameras = append([]CameraOption(nil), inv.C201Cameras...)
 	g.mu.RUnlock()
-	status := GatewayStatus{Mode: "live", Inventory: inv, Note: "GET /v2/info is read-only; the camera session is prepared only by an explicit inventory or PTZ action"}
+	status := GatewayStatus{Mode: "live", Inventory: inv, Note: "Health, info and selected-camera metadata are read-only; a camera session is opened only by an explicit inventory or selection action"}
 	_, code, err := g.request(ctx, "/healthz", false)
 	status.HTTPStatus = code
 	status.Reachable = err == nil && code == http.StatusOK
@@ -164,14 +181,46 @@ func (g *Gateway) Status(ctx context.Context) GatewayStatus {
 	if err2 == nil {
 		status.InfoStatus = infoCode
 	}
+	g.refreshSelectedCameraState(ctx)
+	status.Inventory = g.inventorySnapshot()
 	return status
 }
 
-// RefreshInventory fetches the managed camera records and chooses only a C201
-// RTSP endpoint from that same camera record. It never keeps an arbitrary
-// stream URL from another camera.
+func (g *Gateway) refreshSelectedCameraState(ctx context.Context) {
+	g.mu.RLock()
+	cameraID := g.selectedCameraID
+	expected, exists := g.cameras[cameraID]
+	fetchedAt := g.inventoryFetched
+	g.mu.RUnlock()
+	if cameraID == "" || !exists || expected.rtspURL == "" {
+		return
+	}
+	b, code, err := g.request(ctx, "/v2/cameras?include_streams=false", true)
+	if err != nil || code != http.StatusOK {
+		return
+	}
+	var document managedInventory
+	if json.Unmarshal(b, &document) != nil {
+		return
+	}
+	item, found := findManagedCamera(g, document, cameraID, expected.model)
+	if found {
+		g.mu.RLock()
+		stillCurrent := g.selectedCameraID == cameraID && g.inventoryFetched.Equal(fetchedAt)
+		g.mu.RUnlock()
+		if !stillCurrent {
+			return
+		}
+		g.setCameraSession(cameraID, item)
+	}
+}
+
+// RefreshInventory fetches managed camera records and keeps capabilities and
+// RTSP endpoints paired with the exact camera that advertised them.
 func (g *Gateway) RefreshInventory(ctx context.Context) (InventorySummary, error) {
-	b, code, err := g.request(ctx, "/v2/cameras", true)
+	// Inventory is metadata-only. Starting every advertised video source just
+	// to populate the selector creates camera sessions the user did not choose.
+	b, code, err := g.request(ctx, "/v2/cameras?include_streams=false", true)
 	if err != nil {
 		return InventorySummary{}, err
 	}
@@ -188,43 +237,79 @@ func (g *Gateway) RefreshInventory(ctx context.Context) (InventorySummary, error
 func (g *Gateway) applyInventory(document managedInventory) InventorySummary {
 	now := time.Now()
 	cameras := make(map[string]gatewayCamera)
-	options := make([]CameraOption, 0)
+	options := make([]CameraOption, 0, len(document.Cameras))
+	c201Options := make([]CameraOption, 0)
 	streams := 0
 	for _, camera := range document.Cameras {
+		if camera.ID == "" {
+			continue
+		}
 		modelName := camera.Model
 		if modelName == "" {
 			modelName = camera.ModelID
 		}
+		isC201 := strings.EqualFold(modelName, "xiaomi.camera.c201")
+		videoSupported, ptzSupported := false, false
+		if camera.Capabilities != nil {
+			videoSupported = camera.Capabilities.Video
+			ptzSupported = camera.Capabilities.PTZ
+		} else if isC201 {
+			// Older gateway responses predate capability fields. Preserve the
+			// existing verified C201 behavior, while keeping unknown models off.
+			videoSupported, ptzSupported = true, true
+		}
+		videoState := strings.ToLower(strings.TrimSpace(camera.Video.State))
+		if videoState == "" {
+			videoState = "not_prepared"
+		}
+		reason := strings.TrimSpace(camera.Video.Reason)
 		for _, stream := range camera.Streams {
 			if (stream.Protocol == "" || stream.Protocol == "rtsp") && g.allowRTSP(stream.URL) {
 				streams++
 			}
 		}
-		if !strings.EqualFold(modelName, "xiaomi.camera.c201") || camera.ID == "" {
-			continue
-		}
 		name := strings.TrimSpace(camera.Name)
 		if name == "" {
-			name = "Xiaomi C201"
+			name = modelName
+			if name == "" {
+				name = "Xiaomi camera"
+			}
 		}
 		item := gatewayCamera{
-			option:     CameraOption{ID: camera.ID, Name: name},
+			option: CameraOption{
+				ID: camera.ID, Name: name, Model: modelName,
+				Video: videoSupported, VideoState: videoState, Reason: reason,
+				SessionActive: camera.Video.SessionActive, PTZ: ptzSupported,
+			},
 			model:      modelName,
-			videoState: strings.ToLower(camera.Video.State),
+			videoState: videoState,
 		}
-		for _, stream := range camera.Streams {
-			if (stream.Protocol != "" && stream.Protocol != "rtsp") || !g.allowRTSP(stream.URL) {
-				continue
+		if videoSupported {
+			for _, stream := range camera.Streams {
+				if (stream.Protocol != "" && stream.Protocol != "rtsp") || !g.allowRTSP(stream.URL) {
+					continue
+				}
+				if item.rtspURL == "" || stream.ID == "live" || stream.ID == "main" {
+					item.rtspURL = stream.URL
+				}
+				if stream.ID == "live" || stream.ID == "main" {
+					break
+				}
 			}
-			if item.rtspURL == "" || stream.ID == "live" || stream.ID == "main" {
-				item.rtspURL = stream.URL
-			}
-			if stream.ID == "live" || stream.ID == "main" {
-				break
-			}
+		}
+		item.option.VideoReady = videoSupported && videoState == "streaming" && item.rtspURL != ""
+		if !videoSupported && reason == "" {
+			reason = "unsupported_model"
+			item.option.Reason = reason
+		}
+		if videoSupported && !item.option.VideoReady && reason == "" {
+			item.option.Reason = videoState
 		}
 		cameras[camera.ID] = item
 		options = append(options, item.option)
+		if isC201 {
+			c201Options = append(c201Options, item.option)
+		}
 	}
 
 	g.selectionMu.Lock()
@@ -233,24 +318,38 @@ func (g *Gateway) applyInventory(document managedInventory) InventorySummary {
 	g.cameras = cameras
 	g.inventoryFetched = now
 	g.selectedCameraID = ""
-	for id := range cameras {
-		if len(cameras) == 1 {
-			g.selectedCameraID = id
-		}
+	// Older gateways may return a usable source with the inventory even when
+	// asked for metadata only. With current gateways the user selects the
+	// camera explicitly before the console requests a source.
+	if len(c201Options) == 1 && cameras[c201Options[0].ID].rtspURL != "" {
+		g.selectedCameraID = c201Options[0].ID
+	} else if len(options) == 1 && cameras[options[0].ID].rtspURL != "" {
+		g.selectedCameraID = options[0].ID
+	}
+	for i := range options {
+		options[i].Selected = options[i].ID == g.selectedCameraID
+		item := cameras[options[i].ID]
+		item.option = options[i]
+		cameras[options[i].ID] = item
+	}
+	for i := range c201Options {
+		c201Options[i].Selected = c201Options[i].ID == g.selectedCameraID
 	}
 	summary := InventorySummary{
 		Loaded:             true,
-		CameraCount:        len(document.Cameras),
-		C201Count:          len(options),
+		CameraCount:        len(options),
+		C201Count:          len(c201Options),
 		StreamURLsDetected: streams,
-		C201Cameras:        options,
+		Cameras:            options,
+		C201Cameras:        c201Options,
 		SelectedCameraID:   g.selectedCameraID,
 		SessionState:       "not_prepared",
 		FetchedAt:          now.UTC().Format(time.RFC3339),
 	}
 	if g.selectedCameraID != "" {
 		item := cameras[g.selectedCameraID]
-		summary.SessionReady = item.videoState == "streaming" && item.rtspURL != ""
+		summary.SessionReady = item.option.VideoReady
+		summary.SessionActive = item.option.SessionActive
 		summary.SessionState = item.videoState
 	}
 	g.inventorySummary = summary
@@ -258,8 +357,8 @@ func (g *Gateway) applyInventory(document managedInventory) InventorySummary {
 	return summary
 }
 
-// SelectCamera pins a specific C201 from the current inventory. The identifier
-// must have come from a managed inventory response.
+// SelectCamera pins a camera from the current managed inventory. The
+// identifier must have come from that inventory response.
 func (g *Gateway) SelectCamera(cameraID string) error {
 	g.selectionMu.Lock()
 	defer g.selectionMu.Unlock()
@@ -267,13 +366,27 @@ func (g *Gateway) SelectCamera(cameraID string) error {
 	defer g.mu.Unlock()
 	item, ok := g.cameras[cameraID]
 	if !ok {
-		return errors.New("selected camera is not a C201 in the current inventory")
+		return errors.New("selected camera is not in the current inventory")
 	}
 	g.selectedCameraID = cameraID
 	g.inventorySummary.SelectedCameraID = cameraID
-	g.inventorySummary.SessionReady = item.videoState == "streaming" && item.rtspURL != ""
+	g.inventorySummary.SessionReady = item.option.VideoReady
+	g.inventorySummary.SessionActive = item.option.SessionActive
 	g.inventorySummary.SessionState = item.videoState
+	for i := range g.inventorySummary.Cameras {
+		g.inventorySummary.Cameras[i].Selected = g.inventorySummary.Cameras[i].ID == cameraID
+	}
+	for i := range g.inventorySummary.C201Cameras {
+		g.inventorySummary.C201Cameras[i].Selected = g.inventorySummary.C201Cameras[i].ID == cameraID
+	}
 	return nil
+}
+
+func (g *Gateway) Camera(cameraID string) (CameraOption, bool) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	item, ok := g.cameras[cameraID]
+	return item.option, ok
 }
 
 func (g *Gateway) SelectedCameraID() string {
@@ -286,97 +399,97 @@ func (g *Gateway) inventorySnapshot() InventorySummary {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	result := g.inventorySummary
+	result.Cameras = append([]CameraOption(nil), result.Cameras...)
 	result.C201Cameras = append([]CameraOption(nil), result.C201Cameras...)
 	return result
 }
 
-// PrepareSelected waits for the selected camera's existing managed session to
-// reach the gateway's streaming state. This establishes the CS2/MISS session;
-// it does not run FFmpeg or inspect image stability.
-func (g *Gateway) PrepareSelected(ctx context.Context) error {
-	g.mu.RLock()
-	id := g.selectedCameraID
-	if id == "" && len(g.cameras) == 1 {
-		for only := range g.cameras {
-			id = only
-		}
-	}
-	ready := id != "" && g.inventorySummary.SessionReady && g.inventorySummary.SelectedCameraID == id
-	g.mu.RUnlock()
-	if id == "" {
-		return errors.New("select a C201 camera from the inventory")
-	}
-	if ready {
-		return nil
-	}
-	return g.PrepareCamera(ctx, id)
-}
-
 func (g *Gateway) PrepareCamera(ctx context.Context, cameraID string) error {
 	if cameraID == "" {
-		return errors.New("select a C201 camera from the inventory")
+		return errors.New("select a camera from the inventory")
+	}
+	g.mu.RLock()
+	item, exists := g.cameras[cameraID]
+	selected := g.selectedCameraID
+	g.mu.RUnlock()
+	if !exists {
+		return errors.New("selected camera is no longer available in the current inventory")
+	}
+	if !item.option.PTZ {
+		return errors.New("PTZ is not supported for the selected camera")
+	}
+	if selected != cameraID {
+		return errors.New("camera selection changed before PTZ step; no request was sent")
+	}
+	if err := ctx.Err(); err != nil {
+		return errors.New("PTZ request expired before session check; no request was sent")
+	}
+	if !item.option.SessionActive {
+		return errors.New("selected camera has no active camera session; no PTZ request was sent")
+	}
+	return nil
+}
+
+// StartCameraSession opens at most one managed source for an explicit
+// selection action. It never repeats streams_for after an EOF.
+func (g *Gateway) StartCameraSession(ctx context.Context, cameraID string) error {
+	if cameraID == "" {
+		return errors.New("select a camera from the inventory")
 	}
 	g.mu.RLock()
 	selected := g.selectedCameraID
 	item, exists := g.cameras[cameraID]
-	ready := exists && selected == cameraID && g.inventorySummary.SessionReady &&
-		g.inventorySummary.SelectedCameraID == cameraID && item.rtspURL != ""
+	prepared := exists && selected == cameraID && g.inventorySummary.SelectedCameraID == cameraID &&
+		item.option.SessionActive && item.rtspURL != ""
 	g.mu.RUnlock()
 	if selected != cameraID {
-		return errors.New("camera selection changed before PTZ preparation; no request was sent")
+		return errors.New("camera selection changed before session preparation; no request was sent")
 	}
 	if !exists {
-		return errors.New("selected C201 is no longer available in the current inventory")
+		return errors.New("selected camera is no longer available in the current inventory")
 	}
-	if ready {
+	if !item.option.Video {
+		return errors.New("video is not supported for the selected camera")
+	}
+	if prepared {
 		return nil
 	}
-	for {
-		if err := ctx.Err(); err != nil {
-			g.setSessionState(cameraID, "timeout", false)
-			return errors.New("camera session is not ready yet; no PTZ request was sent")
-		}
-		b, code, err := g.request(ctx, "/v2/cameras", true)
-		if err != nil {
-			return fmt.Errorf("gateway camera session check failed: %w", err)
-		}
-		if code != http.StatusOK {
-			return fmt.Errorf("gateway camera session check returned HTTP %d", code)
-		}
-		var document managedInventory
-		if err := json.Unmarshal(b, &document); err != nil {
-			return fmt.Errorf("gateway camera session response is invalid: %w", err)
-		}
-		item, found := findManagedC201(g, document, cameraID)
-		if !found {
-			return errors.New("selected C201 is missing from gateway inventory")
-		}
-		g.setCameraSession(cameraID, item)
-		g.mu.RLock()
-		selected = g.selectedCameraID
-		current, currentExists := g.cameras[cameraID]
-		ready = currentExists && g.inventorySummary.SessionReady && g.inventorySummary.SelectedCameraID == cameraID &&
-			current.videoState == "streaming" && current.rtspURL != ""
-		g.mu.RUnlock()
-		if selected != cameraID {
-			return errors.New("camera selection changed during PTZ preparation; no request was sent")
-		}
-		if !currentExists {
-			return errors.New("selected C201 is no longer available in the current inventory")
-		}
-		if ready {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			g.setSessionState(cameraID, "timeout", false)
-			return errors.New("camera session is not ready yet; no PTZ request was sent")
-		case <-time.After(500 * time.Millisecond):
-		}
+	if err := ctx.Err(); err != nil {
+		return errors.New("camera session request expired before source start; no request was sent")
 	}
+	endpoint := "/v2/cameras?streams_for=" + url.QueryEscape(cameraID)
+	b, code, err := g.request(ctx, endpoint, true)
+	if err != nil {
+		return fmt.Errorf("gateway camera session request failed: %w", err)
+	}
+	if code != http.StatusOK {
+		return fmt.Errorf("gateway camera session request returned HTTP %d", code)
+	}
+	var document managedInventory
+	if err := json.Unmarshal(b, &document); err != nil {
+		return fmt.Errorf("gateway camera session response is invalid: %w", err)
+	}
+	g.mu.RLock()
+	expected, expectedExists := g.cameras[cameraID]
+	g.mu.RUnlock()
+	if !expectedExists {
+		return errors.New("selected camera is no longer available in the current inventory")
+	}
+	item, found := findManagedCamera(g, document, cameraID, expected.model)
+	if !found {
+		return errors.New("selected camera identity changed or is missing from gateway inventory")
+	}
+	if !item.option.Video {
+		return errors.New("gateway did not confirm video capability for the selected camera")
+	}
+	if item.rtspURL == "" {
+		return errors.New("gateway did not provide an allowed RTSP stream for the selected camera")
+	}
+	g.setCameraSession(cameraID, item)
+	return nil
 }
 
-func findManagedC201(g *Gateway, document managedInventory, cameraID string) (gatewayCamera, bool) {
+func findManagedCamera(g *Gateway, document managedInventory, cameraID, expectedModel string) (gatewayCamera, bool) {
 	for _, camera := range document.Cameras {
 		if camera.ID != cameraID {
 			continue
@@ -385,18 +498,45 @@ func findManagedC201(g *Gateway, document managedInventory, cameraID string) (ga
 		if modelName == "" {
 			modelName = camera.ModelID
 		}
-		if !strings.EqualFold(modelName, "xiaomi.camera.c201") {
+		if !strings.EqualFold(modelName, expectedModel) {
 			return gatewayCamera{}, false
 		}
-		item := gatewayCamera{option: CameraOption{ID: camera.ID, Name: camera.Name}, model: modelName, videoState: strings.ToLower(camera.Video.State)}
-		for _, stream := range camera.Streams {
-			if (stream.Protocol == "" || stream.Protocol == "rtsp") && g.allowRTSP(stream.URL) {
-				item.rtspURL = stream.URL
-				if stream.ID == "live" || stream.ID == "main" {
-					break
+		isC201 := strings.EqualFold(modelName, "xiaomi.camera.c201")
+		videoSupported, ptzSupported := false, false
+		if camera.Capabilities != nil {
+			videoSupported = camera.Capabilities.Video
+			ptzSupported = camera.Capabilities.PTZ
+		} else if isC201 {
+			videoSupported, ptzSupported = true, true
+		}
+		videoState := strings.ToLower(strings.TrimSpace(camera.Video.State))
+		if videoState == "" {
+			videoState = "not_prepared"
+		}
+		name := strings.TrimSpace(camera.Name)
+		if name == "" {
+			name = modelName
+		}
+		item := gatewayCamera{
+			option: CameraOption{
+				ID: camera.ID, Name: name, Model: modelName,
+				Video: videoSupported, VideoState: videoState,
+				SessionActive: camera.Video.SessionActive,
+				Reason:        strings.TrimSpace(camera.Video.Reason), PTZ: ptzSupported,
+			},
+			model: modelName, videoState: videoState,
+		}
+		if videoSupported {
+			for _, stream := range camera.Streams {
+				if (stream.Protocol == "" || stream.Protocol == "rtsp") && g.allowRTSP(stream.URL) {
+					item.rtspURL = stream.URL
+					if stream.ID == "live" || stream.ID == "main" {
+						break
+					}
 				}
 			}
 		}
+		item.option.VideoReady = videoSupported && videoState == "streaming" && item.rtspURL != ""
 		return item, true
 	}
 	return gatewayCamera{}, false
@@ -413,8 +553,32 @@ func (g *Gateway) setCameraSession(cameraID string, item gatewayCamera) {
 	if _, exists := g.cameras[cameraID]; !exists {
 		return
 	}
+	// Keep the selected source across metadata-only updates until the
+	// gateway confirms its session has ended. A new explicit selection can
+	// still provide a fresh URL even if its initial status says retrying.
+	if item.rtspURL == "" && (item.videoState != "retrying" || item.option.SessionActive) {
+		item.rtspURL = g.cameras[cameraID].rtspURL
+	}
 	g.cameras[cameraID] = item
-	g.inventorySummary.SessionReady = item.videoState == "streaming" && item.rtspURL != ""
+	item.option.Selected = true
+	item.option.VideoReady = item.option.Video && item.videoState == "streaming" && item.rtspURL != ""
+	g.cameras[cameraID] = item
+	for i := range g.inventorySummary.Cameras {
+		if g.inventorySummary.Cameras[i].ID == cameraID {
+			g.inventorySummary.Cameras[i] = item.option
+		} else {
+			g.inventorySummary.Cameras[i].Selected = false
+		}
+	}
+	for i := range g.inventorySummary.C201Cameras {
+		if g.inventorySummary.C201Cameras[i].ID == cameraID {
+			g.inventorySummary.C201Cameras[i] = item.option
+		} else {
+			g.inventorySummary.C201Cameras[i].Selected = false
+		}
+	}
+	g.inventorySummary.SessionReady = item.option.VideoReady
+	g.inventorySummary.SessionActive = item.option.SessionActive
 	g.inventorySummary.SessionState = item.videoState
 	g.inventorySummary.SelectedCameraID = cameraID
 }
@@ -446,16 +610,19 @@ func (g *Gateway) Step(ctx context.Context, cameraID, direction string) (string,
 	g.mu.RLock()
 	selected := g.selectedCameraID
 	item, exists := g.cameras[cameraID]
-	ready := g.inventorySummary.SessionReady && g.inventorySummary.SelectedCameraID == cameraID
+	sessionActive := item.option.SessionActive && g.inventorySummary.SelectedCameraID == cameraID
 	g.mu.RUnlock()
 	if !exists {
-		return "", errors.New("selected camera is not available in the current C201 inventory")
+		return "", errors.New("selected camera is not available in the current inventory")
 	}
 	if selected != cameraID {
 		return "", errors.New("camera selection changed before PTZ step; no request was sent")
 	}
-	if !ready || item.rtspURL == "" {
-		return "", errors.New("camera session is not connected")
+	if !item.option.PTZ {
+		return "", errors.New("PTZ is not supported for the selected camera")
+	}
+	if !sessionActive {
+		return "", errors.New("selected camera has no active camera session")
 	}
 	body, err := json.Marshal(map[string]string{"direction": direction})
 	if err != nil {
@@ -523,14 +690,14 @@ func (g *Gateway) RTSPURL() (string, error) {
 	cameraID := g.selectedCameraID
 	item, exists := g.cameras[cameraID]
 	ready := cameraID != "" && exists && g.inventorySummary.SelectedCameraID == cameraID &&
-		g.inventorySummary.SessionReady && item.videoState == "streaming" && item.rtspURL != ""
+		g.inventorySummary.SessionReady && item.option.VideoReady
 	raw := item.rtspURL
 	g.mu.RUnlock()
 	if !ready {
-		return "", errors.New("selected C201 has no ready managed RTSP stream")
+		return "", errors.New("selected camera has no ready managed RTSP stream")
 	}
 	if !g.allowRTSP(raw) {
-		return "", errors.New("selected C201 RTSP URL host is not allowed or URL includes credentials")
+		return "", errors.New("selected camera RTSP URL host is not allowed or URL includes credentials")
 	}
 	return raw, nil
 }

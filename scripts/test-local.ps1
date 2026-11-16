@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [switch]$ExerciseMockPtz,
-    [switch]$KeepStack
+    [switch]$KeepStack,
+    [switch]$SkipGoChecks
 )
 
 $ErrorActionPreference = 'Continue'
@@ -22,8 +23,11 @@ $GatewayContainer = "xlg-e2e-$RunId-gateway"
 $MockContainer = "xlg-e2e-$RunId-onvif"
 $GatewayImage = "xlg-gateway-e2e:$RunId"
 $MockImage = "xlg-onvif-e2e:$RunId"
+$FrigateImage = "xlg-frigate-ha-e2e:$RunId"
+$FrigateVolume = "xlg-frigate-ha-e2e-$RunId"
 $OwnedContainers = [System.Collections.Generic.List[string]]::new()
 $StackCreated = $false
+$FrigateVolumeCreated = $false
 $Failure = $null
 
 New-Item -ItemType Directory -Force -Path $EvidenceRoot, $RunRoot, $HaConfig, $GatewayDir | Out-Null
@@ -149,8 +153,18 @@ try {
     Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/test_gateway_client.py') -Destination (Join-Path $HaConfig 'tests/test_gateway_client.py')
     Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/test_camera_entity.py') -Destination (Join-Path $HaConfig 'tests/test_camera_entity.py')
     Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/test_camera_settings.py') -Destination (Join-Path $HaConfig 'tests/test_camera_settings.py')
+    Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/test_camera_storage.py') -Destination (Join-Path $HaConfig 'tests/test_camera_storage.py')
     Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/e2e/test_ha.py') -Destination (Join-Path $HaConfig 'tests/e2e/test_ha.py')
     Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/e2e/test_c201_ha.py') -Destination (Join-Path $HaConfig 'tests/e2e/test_c201_ha.py')
+    Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/e2e/ha_live_soak.py') -Destination (Join-Path $HaConfig 'tests/e2e/ha_live_soak.py')
+    Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/e2e/xlg_soak_live.py') -Destination (Join-Path $HaConfig 'tests/e2e/xlg_soak_live.py')
+    Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/e2e/test_hls_diagnostics.py') -Destination (Join-Path $HaConfig 'tests/e2e/test_hls_diagnostics.py')
+    foreach ($hlsFile in @('test_c201_ha.py', 'ha_live_soak.py', 'xlg_soak_live.py')) {
+        $hlsHelperSource = Join-Path $RepoRoot "tests/e2e/$hlsFile"
+        $hlsHelperCopy = Join-Path $HaConfig "tests/e2e/$hlsFile"
+        if ((Get-FileHash -LiteralPath $hlsHelperSource -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath $hlsHelperCopy -Algorithm SHA256).Hash) { throw "Copied HA HLS helper differs from current checkout: $hlsFile" }
+    }
+    Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/e2e/test_frigate_motion_mqtt.py') -Destination (Join-Path $HaConfig 'tests/e2e/test_frigate_motion_mqtt.py')
     Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/e2e/verify_source.py') -Destination (Join-Path $HaConfig 'tests/e2e/verify_source.py')
     $componentManifest = Get-TreeManifest $sourceIntegrationRoot 'custom_components/xiaomi_local_gateway'
     $copiedManifest = Get-TreeManifest $integrationRoot 'custom_components/xiaomi_local_gateway'
@@ -180,8 +194,12 @@ try {
     ) | Set-Content -Path (Join-Path $RunRoot 'runtime.env') -Encoding ASCII
     "XLG_API_TOKEN=$apiToken" | Set-Content -Path (Join-Path $RunRoot 'gateway.env') -Encoding ASCII
 
-    $null = Invoke-Wslc 'Go race tests in pinned builder stage' @('build', '--no-cache', '--progress', 'plain', '--target', 'go-race', $RepoRoot)
-    $null = Invoke-Wslc 'Go vet in pinned builder stage' @('build', '--no-cache', '--progress', 'plain', '--target', 'go-vet', $RepoRoot)
+    if ($SkipGoChecks) {
+        Write-Evidence 'GO_CHECKS=SKIPPED_BY_REQUEST'
+    } else {
+        $null = Invoke-Wslc 'Go race tests in pinned builder stage' @('build', '--no-cache', '--progress', 'plain', '--target', 'go-race', $RepoRoot)
+        $null = Invoke-Wslc 'Go vet in pinned builder stage' @('build', '--no-cache', '--progress', 'plain', '--target', 'go-vet', $RepoRoot)
+    }
 
     $null = Invoke-Wslc 'Pull pinned Home Assistant image' @('pull', $HaImage)
     $haVersion = Invoke-Wslc 'Read pinned Home Assistant image version' @('run', '--rm', '--entrypoint', 'python3', $HaImage, '-m', 'homeassistant', '--version')
@@ -200,15 +218,21 @@ try {
 
     $null = Invoke-Wslc 'Build current gateway source' @('build', '--progress', 'plain', '-t', $GatewayImage, $RepoRoot)
     $null = Invoke-Wslc 'Build pinned ONVIF and RTSP media mock from checkout' @('build', '--progress', 'plain', '-f', (Join-Path $RepoRoot 'tests/mocks/Dockerfile'), '-t', $MockImage, $RepoRoot)
+    $null = Invoke-Wslc 'Build official Frigate HA integration v5.15.6 pinned to 3f1469c' @('build', '--progress', 'plain', '-f', (Join-Path $RepoRoot 'tests/mocks/frigate-integration.Dockerfile'), '-t', $FrigateImage, $RepoRoot)
+    $null = Invoke-Wslc 'Create isolated volume for official Frigate HA integration' @('volume', 'create', $FrigateVolume)
+    $FrigateVolumeCreated = $true
+    $frigateSeedOutput = Invoke-Wslc 'Seed and verify pinned Frigate HA integration source' @('run', '--rm', '-v', "${FrigateVolume}:/frigate", $FrigateImage)
+    $frigateSeedText = ($frigateSeedOutput | ForEach-Object { [string]$_ }) -join "`n"
+    if ($frigateSeedText -notmatch 'v5\.15\.6 3f1469c') { throw 'Frigate integration volume does not contain the pinned official source' }
 
     $null = Invoke-Wslc 'Create unique test network' @('network', 'create', $Network)
     $StackCreated = $true
     $OwnedContainers.Add($MockContainer)
-    $null = Invoke-Wslc 'Start fresh ONVIF and H.264 RTSP mock' @('run', '-d', '--name', $MockContainer, '--network', $Network, '--network-alias', 'xlg-onvif-mock', '--network-alias', 'xlg-rtsp-mock', $MockImage)
+    $null = Invoke-Wslc 'Start fresh ONVIF, H.264 RTSP, and MQTT mocks' @('run', '-d', '--name', $MockContainer, '--network', $Network, '--network-alias', 'xlg-onvif-mock', '--network-alias', 'xlg-rtsp-mock', '--network-alias', 'xlg-mqtt', $MockImage)
     $OwnedContainers.Add($GatewayContainer)
     $null = Invoke-Wslc 'Start gateway built from this checkout' @('run', '-d', '--name', $GatewayContainer, '--network', $Network, '--network-alias', 'xlg-gateway', '--env-file', (Join-Path $RunRoot 'gateway.env'), '-v', "${GatewayDir}:/config:ro", $GatewayImage)
     $OwnedContainers.Add($HaContainer)
-    $null = Invoke-Wslc 'Start fresh Home Assistant config' @('run', '-d', '--name', $HaContainer, '--network', $Network, '-p', "127.0.0.1:${haPort}:8123", '-v', "${HaConfig}:/config", $HaImage)
+    $null = Invoke-Wslc 'Start fresh Home Assistant config with pinned official Frigate integration' @('run', '-d', '--name', $HaContainer, '--network', $Network, '-p', "127.0.0.1:${haPort}:8123", '-v', "${HaConfig}:/config", '-v', "${FrigateVolume}:/config/custom_components/frigate:ro", $HaImage)
     Wait-HomeAssistant $haPort
 
     $gatewayImageObject = Get-WslcJson 'Inspect unique gateway image' @('inspect', '--type', 'image', '--format', 'json', $GatewayImage)
@@ -222,12 +246,16 @@ try {
     if ($haContainerObject[0].Image -ne $expectedHaImageId) { throw 'HA container is not running the pinned image pulled for this run' }
     Write-Evidence "HA_CONTAINER_IMAGE_ID=$($haContainerObject[0].Image)"
     $null = Invoke-HaPython 'Verify current integration hashes inside HA' @('/config/tests/e2e/verify_source.py')
-    $null = Invoke-HaPython 'Home Assistant check_config' @('-m', 'homeassistant', '--script', 'check_config', '--config', '/config')
+    $checkConfigOutput = Invoke-HaPython 'Home Assistant check_config' @('-m', 'homeassistant', '--script', 'check_config', '--config', '/config')
+    $checkConfigText = ($checkConfigOutput | ForEach-Object { [string]$_ }) -join "`n"
+    if ($checkConfigText -match 'Incorrect config|Invalid config for') { throw 'Home Assistant check_config reported invalid configuration' }
     $null = Invoke-HaPython 'Python gateway client tests' @('-m', 'unittest', 'discover', '-s', '/config/tests', '-p', 'test_gateway_client.py', '-v')
     $null = Invoke-HaPython 'HA camera stream capability follows coordinator updates' @('/config/tests/test_camera_entity.py')
     $null = Invoke-HaPython 'C201 settings retry, feature gate, and diagnostic entities' @('/config/tests/test_camera_settings.py')
+    $null = Invoke-HaPython 'C201 read-only SD status and capacity entities' @('/config/tests/test_camera_storage.py')
     $null = Invoke-HaPython 'Fresh HA onboarding and integration config flow' @('/config/tests/e2e/test_ha.py', 'setup')
     $null = Invoke-HaPython 'Verify HA camera and PTZ entities' @('/config/tests/e2e/test_ha.py', 'verify-entities')
+    $null = Invoke-HaPython 'Verify official Frigate motion entities and HA automations through isolated broker' @('/config/tests/e2e/test_frigate_motion_mqtt.py')
     $null = Invoke-HaPython 'Verify C201 snapshot through HA camera proxy and live HA HLS stream' @('/config/tests/e2e/test_c201_ha.py', 'verify', '--seconds', '12')
     $null = Invoke-HaPython 'Verify direct gateway RTSP diagnostic against mock source' @('/config/tests/e2e/test_c201_ha.py', 'direct-rtsp', '--seconds', '5')
     $rtspLogs = Invoke-Wslc 'Read isolated mock RTSP evidence' @('logs', $MockContainer)
@@ -271,6 +299,7 @@ try {
         Write-Evidence "GATEWAY_CONTAINER=$GatewayContainer"
         Write-Evidence "ONVIF_CONTAINER=$MockContainer"
         Write-Evidence "NETWORK=$Network"
+        Write-Evidence "FRIGATE_INTEGRATION_VOLUME=$FrigateVolume"
         Write-Evidence "LOCAL_HA_URL=http://127.0.0.1:$haPort"
         Write-Evidence "LOCAL_CREDENTIALS_PATH=$(Join-Path $RunRoot 'runtime.env')"
         Write-Evidence "LOCAL_GATEWAY_CREDENTIALS_PATH=$(Join-Path $RunRoot 'gateway.env')"
@@ -279,6 +308,7 @@ try {
             $null = Invoke-Wslc 'Cleanup containers created by this run' (@('remove', '--force') + $OwnedContainers.ToArray())
         }
         if ($StackCreated) { $null = Invoke-Wslc 'Cleanup network created by this run' @('network', 'remove', $Network) }
+        if ($FrigateVolumeCreated) { $null = Invoke-Wslc 'Cleanup official Frigate integration volume created by this run' @('volume', 'remove', $FrigateVolume) }
         $resolvedTestRoot = (Resolve-Path $TestRoot).Path.TrimEnd('\') + '\'
         $resolvedRunRoot = [System.IO.Path]::GetFullPath($RunRoot)
         if ($resolvedRunRoot.StartsWith($resolvedTestRoot, [System.StringComparison]::OrdinalIgnoreCase) -and (Split-Path $resolvedRunRoot -Leaf).StartsWith('run-')) {

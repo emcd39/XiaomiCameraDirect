@@ -8,10 +8,13 @@ import unittest
 from types import SimpleNamespace
 
 from homeassistant.components.camera import CameraEntityFeature
+from homeassistant.exceptions import HomeAssistantError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from custom_components.xiaomi_local_gateway.camera import GatewayCamera
+from custom_components.xiaomi_local_gateway.api import GatewayError
+from custom_components.xiaomi_local_gateway.button import PTZButton
 
 
 class CameraEntityTests(unittest.TestCase):
@@ -59,6 +62,28 @@ class CameraEntityTests(unittest.TestCase):
         self.assertEqual(detail["availability"], "unknown")
         self.assertEqual(detail["reason"], "unverified_firmware")
         self.assertIn("firmware", detail["reason_text"].lower())
+
+
+class ColdCameraTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_preparation_never_sends_a_ptz_step(self) -> None:
+        actions = []
+
+        async def stream(camera_id):
+            actions.append(("stream", camera_id))
+            raise GatewayError("Camera stream timed out")
+
+        async def step(camera_id, direction, *, managed):
+            actions.append(("step", camera_id, direction, managed))
+
+        coordinator = SimpleNamespace(
+            data={"c201": {"on_demand_stream": True, "managed_steps": True, "ptz": True}},
+            client=SimpleNamespace(camera_stream=stream, ptz_step=step),
+        )
+        button = PTZButton(coordinator, "c201", "left")
+
+        with self.assertRaisesRegex(HomeAssistantError, "Camera stream timed out"):
+            await button.async_press()
+        self.assertEqual(actions, [("stream", "c201")])
 
 
 if __name__ == "__main__":

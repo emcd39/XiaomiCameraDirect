@@ -34,6 +34,7 @@ func (h *serverHandler) OnPlay(_ *gortsplib.ServerHandlerOnPlayCtx) (*base.Respo
 
 func main() {
 	file := flag.String("file", "/tmp/mock-c201.h264", "Annex-B H.264 test frame")
+	address := flag.String("address", ":8554", "RTSP listen address")
 	flag.Parse()
 
 	data, err := os.ReadFile(*file)
@@ -62,7 +63,7 @@ func main() {
 		fatal(err)
 	}
 	media := &description.Media{Type: description.MediaTypeVideo, Formats: []format.Format{forma}}
-	server := &gortsplib.Server{RTSPAddress: ":8554"}
+	server := &gortsplib.Server{RTSPAddress: *address}
 	stream := &gortsplib.ServerStream{
 		Server: server,
 		Desc:   &description.Session{Medias: []*description.Media{media}},
@@ -85,6 +86,7 @@ func main() {
 	start := time.Now()
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
+	var packetCount int
 	for now := range ticker.C {
 		packets, err := encoder.Encode(nalus)
 		if err != nil {
@@ -101,8 +103,12 @@ func main() {
 				writeMu.Unlock()
 				fatal(err)
 			}
+			packetCount++
 		}
 		writeMu.Unlock()
+		if packetCount == len(packets) {
+			fmt.Printf("MOCK_RTSP payload nalus=%d packets=%d bytes=%d stats=%+v\n", len(nalus), len(packets), len(data), stream.Stats())
+		}
 	}
 }
 

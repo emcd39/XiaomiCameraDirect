@@ -1,0 +1,10 @@
+{
+  "listen": "127.0.0.1:18880",
+  "mock": false,
+  "gateway_url": "http://127.0.0.1:49320",
+  "token_file": "private/api-token.txt",
+  "allowed_rtsp_hosts": ["REPLACE_WITH_GATEWAY_RTSP_HOST"],
+  "ffmpeg_path": "C:/Tools/ffmpeg/bin/ffmpeg.exe",
+  "record_dir": "recordings",
+  "ptz": { "enabled": false }
+}

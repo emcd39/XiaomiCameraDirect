@@ -34,9 +34,15 @@ let previewRunning = false;
 let inventoryLoaded = false;
 let holdPTZResponse = false;
 let resolvePTZResponse;
+let nextPTZOutcome = 'simulated';
 let holdNextStatusResponse = false;
 let delayAllStatusResponses = false;
 let statusInfoCode = 200;
+let ptzEnabled = true;
+let lastPTZResult = null;
+let recordingError = '';
+let recordingReconnecting = false;
+let recordingReconnectAttempt = 0;
 let currentStatusFetches = 0;
 let maxConcurrentStatusFetches = 0;
 const delayedStatusResponses = [];
@@ -111,14 +117,14 @@ function getElement(id) {
   return elements.get(id);
 }
 
-let inventory = {loaded:true,camera_count:1,c201_count:1,stream_urls_detected:0,c201_cameras:[{id:'xiaomi_0123456789abcdef',name:'Mock C201'}],selected_camera_id:'xiaomi_0123456789abcdef',session_ready:true,session_state:'streaming',fetched_at:'2026-11-11T00:00:00Z'};
+let inventory = {loaded:true,camera_count:1,c201_count:1,stream_urls_detected:0,cameras:[{id:'xiaomi_0123456789abcdef',name:'Mock C201',model:'xiaomi.camera.c201',video:true,video_ready:true,video_state:'streaming',session_active:true,ptz:true,selected:true}],c201_cameras:[{id:'xiaomi_0123456789abcdef',name:'Mock C201',model:'xiaomi.camera.c201',video:true,video_ready:true,video_state:'streaming',session_active:true,ptz:true,selected:true}],selected_camera_id:'xiaomi_0123456789abcdef',session_ready:true,session_active:true,session_state:'streaming',fetched_at:'2026-11-11T00:00:00Z'};
 function statusResponse() {
   return {
     mock:true,
-    gateway:{reachable:true,http_status:200,info_status:statusInfoCode,mode:'mock',inventory:inventoryLoaded?inventory:{loaded:false,camera_count:0,c201_count:0,stream_urls_detected:0,c201_cameras:[]},note:'SIMULATION: no camera'},
+    gateway:{reachable:true,http_status:200,info_status:statusInfoCode,mode:'mock',inventory:inventoryLoaded?inventory:{loaded:false,camera_count:0,c201_count:0,stream_urls_detected:0,cameras:[],c201_cameras:[]},note:'SIMULATION: no camera'},
     video:{running:previewRunning,mock:true,frames:previewRunning?4:0,fps:previewRunning?3:0,last_frame_at:previewRunning?'2026-11-11T16:00:00Z':'',resolution:'848x480'},
-    recording:{running:false,directory_configured:false},
-    ptz:{enabled:true,busy:false,last:null},
+    recording:{running:false,reconnecting:recordingReconnecting,reconnect_attempt:recordingReconnectAttempt,directory_configured:false,error:recordingError},
+    ptz:{enabled:ptzEnabled,busy:false,last:lastPTZResult},
     camera_address_verified:false,
   };
 }
@@ -146,19 +152,23 @@ async function mockFetch(input, init = {}) {
   else if (url.pathname === '/api/events' && method === 'GET') payload = [];
   else if (url.pathname === '/api/record/files' && method === 'GET') payload = [];
   else if (url.pathname === '/api/capabilities' && method === 'GET') payload = [];
-  else if (url.pathname === '/api/inventory/refresh' && method === 'POST') { previewRunning = false; inventoryLoaded = true; if(inventory.c201_count>1)inventory={...inventory,selected_camera_id:'',session_ready:false,session_state:'not_prepared'}; payload = inventory; }
-  else if (url.pathname === '/api/inventory/select' && method === 'POST') { const cameraID=JSON.parse(init.body).camera_id;selectionRequests.push(cameraID);previewRunning=false;inventory={...inventory,selected_camera_id:cameraID,session_ready:true,session_state:'streaming'};payload=inventory; }
+  else if (url.pathname === '/api/inventory/refresh' && method === 'POST') { previewRunning = false; inventoryLoaded = true; if(inventory.c201_count>1)inventory={...inventory,selected_camera_id:'',session_ready:false,session_active:false,session_state:'not_prepared',cameras:inventory.cameras.map(camera=>({...camera,selected:false,session_active:false})),c201_cameras:inventory.c201_cameras.map(camera=>({...camera,selected:false,session_active:false}))}; payload = inventory; }
+  else if (url.pathname === '/api/inventory/select' && method === 'POST') { const cameraID=JSON.parse(init.body).camera_id;selectionRequests.push(cameraID);previewRunning=false;const selected=(inventory.cameras||inventory.c201_cameras).find(camera=>camera.id===cameraID);const active=Boolean(selected?.session_active||selected?.ptz);inventory={...inventory,selected_camera_id:cameraID,session_ready:Boolean(selected?.video_ready),session_active:active,session_state:selected?.video_state||'unsupported',cameras:(inventory.cameras||[]).map(camera=>({...camera,selected:camera.id===cameraID,session_active:camera.id===cameraID&&active})),c201_cameras:(inventory.c201_cameras||[]).map(camera=>({...camera,selected:camera.id===cameraID,session_active:camera.id===cameraID&&active}))};payload=inventory; }
   else if (url.pathname === '/api/ptz/step' && method === 'POST') {
     const requestBody = JSON.parse(init.body);
     const direction = requestBody.direction;
     ptzRequests.push(direction);
     ptzCameraRequests.push(requestBody.camera_id);
-    payload = {outcome:'simulated',direction,http_write_status:'simulated_only',reply_0x113:'not_measured',motion:'not_measured',note:'Mock only'};
-    if (holdPTZResponse) return new Promise(resolve => { resolvePTZResponse = () => resolve({ok:true,status:200,json:async()=>payload}); });
+    const outcome=nextPTZOutcome;
+    nextPTZOutcome='simulated';
+    payload = {camera_id:requestBody.camera_id,outcome,direction,http_write_status:outcome==='sent'?'sent':'simulated_only',reply_0x113:'not_measured',motion:'not_measured',note:outcome==='sent'?'Gateway accepted one camera-scoped step':'Mock only'};
+    if (holdPTZResponse) return new Promise(resolve => { resolvePTZResponse = () => { lastPTZResult=payload; resolve({ok:true,status:200,json:async()=>payload}); }; });
+    lastPTZResult = payload;
   }
   else if (url.pathname === '/api/ptz/left' && method === 'POST') {
     ptzRequests.push('left');
-    payload = {outcome:'simulated',direction:'left',http_write_status:'simulated_only',reply_0x113:'not_measured',motion:'not_measured',note:'Mock only'};
+    payload = {camera_id:inventory.selected_camera_id,outcome:'simulated',direction:'left',http_write_status:'simulated_only',reply_0x113:'not_measured',motion:'not_measured',note:'Mock only'};
+    lastPTZResult = payload;
   }
   else if (url.pathname === '/api/video/start' && method === 'POST') { previewRunning = true; payload = {result:'started'}; }
   else if (url.pathname === '/api/video/stop' && method === 'POST') { previewRunning = false; payload = {result:'stopped'}; }
@@ -225,6 +235,13 @@ async function run() {
   assert.ok(apiRequests.includes('POST /api/video/start'));
   assert.ok(apiRequests.includes('POST /api/video/stop'));
 
+  inventory = {...inventory,session_ready:false,session_active:true,session_state:'idle',cameras:inventory.cameras.map(camera=>({...camera,video_ready:false,video_state:'idle',session_active:true})),c201_cameras:inventory.c201_cameras.map(camera=>({...camera,video_ready:false,video_state:'idle',session_active:true}))};
+  await vm.runInContext('status()', context);
+  assert.equal(getElement('startPreview').disabled, true, 'preview stays disabled until RTSP is ready');
+  assert.equal(getElement('ptzLeft').disabled, false, 'PTZ is available for the active session before RTSP readiness');
+  inventory = {...inventory,session_ready:true,session_active:true,session_state:'streaming',cameras:inventory.cameras.map(camera=>({...camera,video_ready:true,video_state:'streaming'})),c201_cameras:inventory.c201_cameras.map(camera=>({...camera,video_ready:true,video_state:'streaming'}))};
+  await vm.runInContext('status()', context);
+
   holdPTZResponse = true;
   const firstClick = getElement('ptzLeft').onclick();
   await new Promise(resolve => setImmediate(resolve));
@@ -246,7 +263,9 @@ async function run() {
 
   const cameraA='xiaomi_1111111111111111';
   const cameraB='xiaomi_2222222222222222';
-  inventory={loaded:true,camera_count:2,c201_count:2,stream_urls_detected:2,c201_cameras:[{id:cameraA,name:'C201 A'},{id:cameraB,name:'C201 B'}],selected_camera_id:cameraA,session_ready:true,session_state:'streaming'};
+  const cameraAOption={id:cameraA,name:'C201 A',model:'xiaomi.camera.c201',video:true,video_ready:true,video_state:'streaming',session_active:true,ptz:true,selected:true};
+  const cameraBOption={id:cameraB,name:'C201 B',model:'xiaomi.camera.c201',video:true,video_ready:true,video_state:'streaming',session_active:true,ptz:true,selected:false};
+  inventory={loaded:true,camera_count:2,c201_count:2,stream_urls_detected:2,cameras:[cameraAOption,cameraBOption],c201_cameras:[cameraAOption,cameraBOption],selected_camera_id:cameraA,session_ready:true,session_active:true,session_state:'streaming'};
   vm.runInContext(`renderInventory(${JSON.stringify(inventory)})`, context);
   const cameraSelect = getElement('cameraSelect');
   assert.equal(cameraSelect.children.length, 2, 'both C201 cameras are available in the selector');
@@ -332,6 +351,103 @@ async function run() {
   const infoCard = getElement('statusCards').children.find(card=>card.children[0].textContent==='API /v2/info');
   assert.equal(String(infoCard.children[1].textContent), '202', 'the queued status updates the UI with the latest response');
   assert.equal(getElement('ptzLeft').disabled, false, 'PTZ arrows are re-enabled after the slow status completes');
+
+  const cameraC='xiaomi_3333333333333333';
+  const cameraCOption={id:cameraC,name:'C400 test',model:'chuangmi.camera.039a04',video:true,video_ready:true,video_state:'streaming',ptz:false,selected:false};
+  inventory={...inventory,camera_count:3,c201_count:2,cameras:[cameraAOption,cameraBOption,cameraCOption],c201_cameras:[cameraAOption,cameraBOption],selected_camera_id:cameraB};
+  vm.runInContext(`renderInventory(${JSON.stringify(inventory)})`, context);
+  assert.equal(cameraSelect.children.length, 3, 'the selector includes non-C201 cameras in the managed inventory');
+  cameraSelect.value=cameraC;
+  await vm.runInContext('selectCamera()',context);
+  assert.equal(vm.runInContext('selectedCameraID',context),cameraC,'the non-C201 selection is adopted from the server');
+  assert.equal(getElement('ptzLeft').disabled,true,'PTZ remains disabled for a camera without PTZ capability');
+  const beforeUnsupportedPTZ=ptzRequests.length;
+  await getElement('ptzLeft').onclick();
+  assert.equal(ptzRequests.length,beforeUnsupportedPTZ,'a camera without PTZ sends no step request');
+
+  const futurePTZ='lab_0000000000000004';
+  const futurePTZOption={id:futurePTZ,name:'Unknown PTZ test',model:'vendor.camera.future-ptz',video:true,video_ready:true,video_state:'streaming',session_active:true,ptz:true,selected:false};
+  inventory={...inventory,camera_count:4,c201_count:2,cameras:[cameraAOption,cameraBOption,cameraCOption,futurePTZOption],c201_cameras:[cameraAOption,cameraBOption],selected_camera_id:cameraB};
+  vm.runInContext(`renderInventory(${JSON.stringify(inventory)})`,context);
+  assert.equal(cameraSelect.children.length,4,'the selector includes an unknown model with explicitly advertised PTZ');
+  cameraSelect.value=futurePTZ;
+  await vm.runInContext('selectCamera()',context);
+  assert.equal(vm.runInContext('selectedCameraID',context),futurePTZ,'unknown PTZ model is selected by its exact inventory ID');
+  assert.equal(getElement('ptzLeft').disabled,false,'gateway-advertised PTZ and active session enable unknown-model controls');
+  const beforeUnknownPTZ=ptzRequests.length;
+  await getElement('ptzLeft').onclick();
+  assert.deepEqual(ptzRequests.slice(beforeUnknownPTZ),['left'],'unknown-model left click sends exactly one step');
+  assert.deepEqual(ptzCameraRequests.slice(beforeUnknownPTZ),[futurePTZ],'unknown-model step uses that camera ID');
+
+  const singleCamera={loaded:true,camera_count:1,c201_count:0,cameras:[{...cameraCOption,selected:false}],c201_cameras:[]};
+  vm.runInContext(`renderInventory(${JSON.stringify(singleCamera)})`,context);
+  assert.equal(getElement('cameraSelectWrap').hidden,false,'a single unselected camera can be chosen');
+  assert.equal(cameraSelect.children.length,2,'the selector offers a placeholder and the camera');
+  inventory={...singleCamera,stream_urls_detected:1,cameras:[{...cameraCOption,selected:true}],selected_camera_id:cameraC,session_ready:true,session_state:'streaming'};
+  inventoryLoaded=true;
+  await vm.runInContext('status()',context);
+  assert.equal(getElement('cameraSelectWrap').hidden,true,'single-camera chooser stays compact');
+  assert.equal(getElement('startPreview').disabled,false,'a single non-C201 camera with video is previewable');
+  await getElement('startPreview').onclick();
+  assert.equal(previewRunning,true,'preview starts for the selected single non-C201 camera');
+  ptzEnabled=false;
+  await vm.runInContext('status()',context);
+  assert.equal(getElement('ptzLeft').disabled,true,'PTZ controls honor disabled live configuration');
+  const beforeDisabledPTZ=ptzRequests.length;
+  await getElement('ptzLeft').onclick();
+  assert.equal(ptzRequests.length,beforeDisabledPTZ,'disabled PTZ configuration sends no request');
+  ptzEnabled=true;
+
+  inventory={loaded:true,camera_count:2,c201_count:1,stream_urls_detected:2,cameras:[cameraAOption,cameraCOption],c201_cameras:[cameraAOption],selected_camera_id:cameraA,session_ready:true,session_state:'streaming'};
+  cameraSelect.value=cameraA;
+  await vm.runInContext('selectCamera()',context);
+  lastPTZResult={camera_id:cameraA,outcome:'sent',direction:'left',http_write_status:'sent',reply_0x113:'not_measured',motion:'not_measured',note:'Gateway accepted one C201 step'};
+  await vm.runInContext('status()',context);
+  assert.equal(getElement('writeStatus').textContent,'sent','the C201 panel displays its own sent PTZ result');
+
+  nextPTZOutcome='sent';
+  holdPTZResponse=true;
+  const cameraAPTzStart=ptzRequests.length;
+  const delayedCameraAPTz=getElement('ptzLeft').onclick();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(ptzRequests.slice(cameraAPTzStart),['left'],'one delayed left request starts for C201');
+  assert.deepEqual(ptzCameraRequests.slice(cameraAPTzStart),[cameraA],'the delayed request is correlated to C201');
+  holdNextStatusResponse=true;
+  const delayedCameraAStatus=vm.runInContext('status()',context);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(delayedStatusResponses.at(-1).snapshot.ptz.last.camera_id,cameraA,'the held status contains the C201 result');
+
+  cameraSelect.value=cameraC;
+  await vm.runInContext('selectCamera()',context);
+  assert.equal(vm.runInContext('selectedCameraID',context),cameraC,'the test switches from C201 to C400 while the C201 response is pending');
+  assert.equal(getElement('ptzLeft').disabled,true,'PTZ stays disabled on C400');
+  assert.equal(getElement('writeStatus').textContent,'—','switching to C400 clears the previous C201 write result');
+  assert.equal(getElement('ptzDetail').textContent,'','switching to C400 clears the previous C201 detail');
+
+  resolveNextDelayedStatusResponse();
+  await delayedCameraAStatus;
+  for(let i=0;i<10&&(vm.runInContext('statusInFlight',context)||currentStatusFetches>0);i++)await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(getElement('writeStatus').textContent,'—','a delayed C201 status cannot restore C201 result in the C400 panel');
+  resolvePTZResponse();
+  await delayedCameraAPTz;
+  holdPTZResponse=false;
+  assert.equal(getElement('writeStatus').textContent,'—','a delayed C201 PTZ response cannot write into the C400 panel');
+  assert.equal(getElement('ptzDetail').textContent,'','a late response cannot leave C201 detail on C400');
+  await vm.runInContext('status()',context);
+  assert.equal(getElement('writeStatus').textContent,'—','the next status poll still hides the C201 result on C400');
+  assert.equal(getElement('ptzLeft').disabled,true,'C400 remains PTZ-disabled after the stale result');
+
+  recordingError = 'recording stopped unexpectedly; incomplete files are hidden';
+  await vm.runInContext('status()', context);
+  const storageCard = getElement('statusCards').children.find(card=>card.children[0].textContent==='Úložiště');
+  assert.match(String(storageCard.children[1].textContent), /Chyba: recording stopped unexpectedly/,
+    'a failed recording is visible in the status cards');
+  recordingReconnecting = true;
+  recordingReconnectAttempt = 2;
+  await vm.runInContext('status()', context);
+  const reconnectCard = getElement('statusCards').children.find(card=>card.children[0].textContent==='Úložiště');
+  assert.equal(String(reconnectCard.children[1].textContent), 'Obnovuji záznam (pokus 2)',
+    'the UI shows the numbered reconnect attempt');
 
   process.stdout.write(JSON.stringify({result:'PASS',environment:'Node test DOM; actual index.html, app.css and app.js; mock fetch/MJPEG',started,stopped,ptzRequests,ptzCameraRequests,selectionRequests,slowStatusLatencyMs:delayedStatusLatencyMs,slowStatusPolls:2,slowStatusResponses:2,maxConcurrentStatusFetches,selectedAfterReselection:vm.runInContext('selectedCameraID',context),previewHiddenOnSelection:image.hidden,previewHiddenOnRefresh:image.hidden,confirmCalls}) + '\n');
 }

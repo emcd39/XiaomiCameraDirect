@@ -49,6 +49,17 @@ type fakeCameraProvider struct {
 type fakeStreamProvider struct {
 	*fakeCameraProvider
 	streams map[model.CameraID][]backend.StreamEndpoint
+	calls   []model.CameraID
+}
+
+type fakeReadyStreamProvider struct {
+	*fakeStreamProvider
+	readyCalls []model.CameraID
+}
+
+func (p *fakeReadyStreamProvider) ReadyStreams(_ context.Context, id model.CameraID) ([]backend.StreamEndpoint, error) {
+	p.readyCalls = append(p.readyCalls, id)
+	return p.streams[id], nil
 }
 
 type fakeCameraSettingsProvider struct {
@@ -57,6 +68,20 @@ type fakeCameraSettingsProvider struct {
 	settingsErr   error
 	settingsCalls int
 	requestedID   model.CameraID
+}
+
+type fakeCameraStorageProvider struct {
+	*fakeCameraProvider
+	storage      backend.CameraStorageSnapshot
+	storageErr   error
+	storageCalls int
+	requestedID  model.CameraID
+}
+
+func (p *fakeCameraStorageProvider) CameraStorage(_ context.Context, id model.CameraID) (backend.CameraStorageSnapshot, error) {
+	p.storageCalls++
+	p.requestedID = id
+	return p.storage, p.storageErr
 }
 
 type fakeCameraDiagnosticsProvider struct {
@@ -184,6 +209,7 @@ func (p *fakeCameraSettingsProvider) CameraSettings(_ context.Context, id model.
 }
 
 func (p *fakeStreamProvider) Streams(_ context.Context, id model.CameraID) ([]backend.StreamEndpoint, error) {
+	p.calls = append(p.calls, id)
 	return p.streams[id], nil
 }
 
@@ -269,6 +295,61 @@ func TestManagedCameraSettingsRequiresAuthAndAdvertisesCapability(t *testing.T) 
 	}
 }
 
+func TestManagedCameraStorageRequiresAuthAndKeepsUnitsUnknown(t *testing.T) {
+	observedAt := time.Date(2026, 11, 13, 9, 0, 0, 0, time.UTC)
+	provider := &fakeCameraStorageProvider{
+		fakeCameraProvider: &fakeCameraProvider{},
+		storage: backend.CameraStorageSnapshot{
+			ObservedAt: observedAt,
+			Properties: map[string]backend.StoragePropertyValue{
+				"card_status": {Code: 0, Value: json.RawMessage(`1`), Unit: nil},
+				"total":       {Code: 0, Value: json.RawMessage(`0`), Unit: nil},
+			},
+		},
+	}
+	state, err := store.Open(filepath.Join(t.TempDir(), "managed-state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewWithManagedState(config.Config{}, "secret", nil, provider, nil, state)
+
+	path := "/v2/cameras/xiaomi_0123456789abcdef/storage"
+	unauthorized := httptest.NewRecorder()
+	h.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, path, nil))
+	if unauthorized.Code != http.StatusUnauthorized || provider.storageCalls != 0 {
+		t.Fatalf("unauthorized storage = %d, provider calls=%d; want 401 and no read", unauthorized.Code, provider.storageCalls)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, path, nil)
+	request.Header.Set("Authorization", "Bearer secret")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || provider.storageCalls != 1 || provider.requestedID != model.CameraID("xiaomi_0123456789abcdef") {
+		t.Fatalf("authorized storage = %d %s, calls=%d id=%q", response.Code, response.Body.String(), provider.storageCalls, provider.requestedID)
+	}
+	if !strings.Contains(response.Body.String(), `"unit":null`) {
+		t.Fatalf("storage response must keep unverified units null: %s", response.Body.String())
+	}
+	var got backend.CameraStorageSnapshot
+	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode storage response: %v", err)
+	}
+	if !got.ObservedAt.Equal(observedAt) || string(got.Properties["card_status"].Value) != "1" || string(got.Properties["total"].Value) != "0" || got.Properties["total"].Unit != nil {
+		t.Fatalf("storage response = %#v", got)
+	}
+	infoRequest := httptest.NewRequest(http.MethodGet, "/v2/info", nil)
+	infoRequest.Header.Set("Authorization", "Bearer secret")
+	infoResponse := httptest.NewRecorder()
+	h.ServeHTTP(infoResponse, infoRequest)
+	var info RuntimeInfo
+	if infoResponse.Code != http.StatusOK || json.Unmarshal(infoResponse.Body.Bytes(), &info) != nil {
+		t.Fatalf("managed info = %d %s", infoResponse.Code, infoResponse.Body.String())
+	}
+	if !reflect.DeepEqual(info.Features, []string{"camera_selection", "sd_capacity"}) {
+		t.Fatalf("managed features = %v", info.Features)
+	}
+}
+
 type sharedInventoryProvider struct {
 	inventory     []model.Camera
 	expectedCalls int64
@@ -297,6 +378,15 @@ func (fakeManagedPTZ) Stop(context.Context, model.CameraID) error         { retu
 func (fakeManagedPTZ) Preset(context.Context, model.CameraID, string) error {
 	return nil
 }
+
+type recordingManagedPTZ struct{ calls []string }
+
+func (p *recordingManagedPTZ) Step(_ context.Context, id model.CameraID, direction string) error {
+	p.calls = append(p.calls, string(id)+":"+direction)
+	return nil
+}
+func (*recordingManagedPTZ) Stop(context.Context, model.CameraID) error           { return nil }
+func (*recordingManagedPTZ) Preset(context.Context, model.CameraID, string) error { return nil }
 
 type fakeManagedStepProvider struct {
 	*fakeCameraProvider
@@ -808,9 +898,10 @@ func TestManagedCameraListMatchesSharedStateFixture(t *testing.T) {
 	}
 }
 
-func TestCloneManagedCamerasCopiesNestedSupportEvidence(t *testing.T) {
+func TestCloneManagedCamerasCopiesNestedMetadata(t *testing.T) {
 	source := []model.Camera{{
 		ID: "cam_a1b2", Name: "C201",
+		Video: model.VideoStatus{SourceFormat: &model.VideoFormat{Codec: "H265", Width: 1920, Height: 1080}},
 		Support: &model.CameraSupport{
 			SchemaVersion: 1,
 			Features: map[string]model.FeatureSupport{
@@ -819,6 +910,10 @@ func TestCloneManagedCamerasCopiesNestedSupportEvidence(t *testing.T) {
 		},
 	}}
 	copy := cloneManagedCameras(source)
+	copy[0].Video.SourceFormat.Width = 848
+	if got := source[0].Video.SourceFormat.Width; got != 1920 {
+		t.Fatalf("mutating response changed provider source width to %d", got)
+	}
 	copy[0].Support.Features["video"] = model.FeatureSupport{Implementation: "absent", Validation: "none", Path: "unknown"}
 	if got := source[0].Support.Features["video"].Implementation; got != "implemented" {
 		t.Fatalf("mutating response changed provider feature metadata to %q", got)
@@ -1185,6 +1280,117 @@ func TestManagedCameraListIncludesAuthorizedCredentialFreeStreams(t *testing.T) 
 	}
 }
 
+func TestManagedCameraListCanSkipAllStreamsWithoutStartingSources(t *testing.T) {
+	cameras := []model.Camera{
+		{ID: "cam-a", Name: "Camera A", Capabilities: model.Capabilities{Video: true, PTZ: true}, Video: model.VideoStatus{State: model.VideoIdle, SessionActive: true}, Control: model.ControlStatus{State: model.ControlReady}},
+		{ID: "cam-b", Name: "Camera B", Capabilities: model.Capabilities{Video: true}, Video: model.VideoStatus{State: model.VideoIdle}, Control: model.ControlStatus{State: model.ControlUnsupported}},
+	}
+	provider := &fakeStreamProvider{
+		fakeCameraProvider: &fakeCameraProvider{cameras: cameras},
+		streams: map[model.CameraID][]backend.StreamEndpoint{
+			"cam-a": {{ID: "live", Protocol: "rtsp", URL: "rtsp://gateway:8554/a"}},
+			"cam-b": {{ID: "live", Protocol: "rtsp", URL: "rtsp://gateway:8554/b"}},
+		},
+	}
+	h := NewWithProviders(config.Config{}, "secret", nil, provider, nil)
+	request := httptest.NewRequest(http.MethodGet, "/v2/cameras?include_streams=false", nil)
+	request.Header.Set("Authorization", "Bearer secret")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	var got managedCameraList
+	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Cameras) != 2 || len(provider.calls) != 0 {
+		t.Fatalf("metadata-only listing returned cameras=%d and started %d stream sources", len(got.Cameras), len(provider.calls))
+	}
+	for _, camera := range got.Cameras {
+		if len(camera.Streams) != 0 {
+			t.Fatalf("metadata-only listing included stream for %s: %#v", camera.ID, camera.Streams)
+		}
+	}
+	if !got.Cameras[0].Video.SessionActive || got.Cameras[0].Video.State != model.VideoIdle {
+		t.Fatalf("metadata-only listing lost active pre-ready session state: %+v", got.Cameras[0].Video)
+	}
+}
+
+func TestManagedCameraListStartsOnlyRequestedCameraStream(t *testing.T) {
+	cameras := []model.Camera{
+		{ID: "cam-a", Name: "Camera A", Capabilities: model.Capabilities{Video: true}, Video: model.VideoStatus{State: model.VideoIdle}, Control: model.ControlStatus{State: model.ControlUnsupported}},
+		{ID: "cam-b", Name: "Camera B", Capabilities: model.Capabilities{Video: true}, Video: model.VideoStatus{State: model.VideoIdle}, Control: model.ControlStatus{State: model.ControlUnsupported}},
+	}
+	provider := &fakeStreamProvider{
+		fakeCameraProvider: &fakeCameraProvider{cameras: cameras},
+		streams: map[model.CameraID][]backend.StreamEndpoint{
+			"cam-a": {{ID: "live", Protocol: "rtsp", URL: "rtsp://gateway:8554/a"}},
+			"cam-b": {{ID: "live", Protocol: "rtsp", URL: "rtsp://gateway:8554/b"}},
+		},
+	}
+	h := NewWithProviders(config.Config{}, "secret", nil, provider, nil)
+	request := httptest.NewRequest(http.MethodGet, "/v2/cameras?streams_for=cam-b", nil)
+	request.Header.Set("Authorization", "Bearer secret")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	var got managedCameraList
+	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Cameras) != 2 || len(provider.calls) != 1 || provider.calls[0] != "cam-b" {
+		t.Fatalf("filtered listing cameras=%d provider calls=%v, want only cam-b", len(got.Cameras), provider.calls)
+	}
+	if len(got.Cameras[0].Streams) != 0 || len(got.Cameras[1].Streams) != 1 || got.Cameras[1].ID != "cam-b" {
+		t.Fatalf("filtered stream placement = %#v", got.Cameras)
+	}
+}
+
+func TestManagedReadyStreamIsAuthenticatedAndOnlyOpensRequestedCamera(t *testing.T) {
+	provider := &fakeReadyStreamProvider{fakeStreamProvider: &fakeStreamProvider{
+		fakeCameraProvider: &fakeCameraProvider{},
+		streams: map[model.CameraID][]backend.StreamEndpoint{
+			"cam-b": {{ID: "live", Protocol: "rtsp", URL: "rtsp://gateway:8554/b"}},
+		},
+	}}
+	h := NewWithProviders(config.Config{}, "secret", nil, provider, nil)
+	request := httptest.NewRequest(http.MethodGet, "/v2/cameras/cam-b/stream", nil)
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized || len(provider.readyCalls) != 0 {
+		t.Fatalf("unauthenticated request reached the camera: %d, calls %v", response.Code, provider.readyCalls)
+	}
+	request.Header.Set("Authorization", "Bearer secret")
+	response = httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "rtsp://gateway:8554/b") {
+		t.Fatalf("stream HTTP %d: %s", response.Code, response.Body.String())
+	}
+	if len(provider.readyCalls) != 1 || provider.readyCalls[0] != "cam-b" || len(provider.fakeStreamProvider.calls) != 0 || provider.fakeCameraProvider.calls != 0 {
+		t.Fatalf("request opened unexpected sources or queried inventory: ready=%v regular=%v inventory=%d", provider.readyCalls, provider.fakeStreamProvider.calls, provider.fakeCameraProvider.calls)
+	}
+}
+
+func TestManagedCameraListUnknownStreamFilterDoesNotStartAnySource(t *testing.T) {
+	provider := &fakeStreamProvider{
+		fakeCameraProvider: &fakeCameraProvider{cameras: []model.Camera{{
+			ID: "cam-a", Name: "Camera A", Capabilities: model.Capabilities{Video: true}, Video: model.VideoStatus{State: model.VideoIdle}, Control: model.ControlStatus{State: model.ControlUnsupported},
+		}}},
+		streams: map[model.CameraID][]backend.StreamEndpoint{"cam-a": {{ID: "live", Protocol: "rtsp", URL: "rtsp://gateway:8554/a"}}},
+	}
+	h := NewWithProviders(config.Config{}, "secret", nil, provider, nil)
+	request := httptest.NewRequest(http.MethodGet, "/v2/cameras?streams_for=missing", nil)
+	request.Header.Set("Authorization", "Bearer secret")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound || len(provider.calls) != 0 {
+		t.Fatalf("unknown stream filter status=%d calls=%v, want 404 and no source opens", response.Code, provider.calls)
+	}
+}
+
 func TestManagedCameraListRejectsCredentialBearingStream(t *testing.T) {
 	provider := &fakeStreamProvider{
 		fakeCameraProvider: &fakeCameraProvider{cameras: []model.Camera{{
@@ -1259,12 +1465,15 @@ func TestManagedPTZProviderIsOptionalAndInjectable(t *testing.T) {
 	camera := model.Camera{
 		ID:           "camera-one",
 		Name:         "Camera one",
+		Model:        "vendor.camera.future-ptz",
+		ModelID:      "vendor.camera.future-ptz",
 		Capabilities: model.Capabilities{Video: true, PTZ: true},
 		Video:        model.VideoStatus{State: model.VideoIdle},
 		Control:      model.ControlStatus{State: model.ControlReady},
 	}
 	provider := &fakeCameraProvider{cameras: []model.Camera{camera}}
-	h := NewWithProviders(config.Config{}, "secret", nil, provider, fakeManagedPTZ{})
+	ptzProvider := &recordingManagedPTZ{}
+	h := NewWithProviders(config.Config{}, "secret", nil, provider, ptzProvider)
 	request := httptest.NewRequest(http.MethodGet, "/v2/cameras", nil)
 	request.Header.Set("Authorization", "Bearer secret")
 	response := httptest.NewRecorder()
@@ -1278,6 +1487,13 @@ func TestManagedPTZProviderIsOptionalAndInjectable(t *testing.T) {
 	}
 	if len(got.Cameras) != 1 || !got.Cameras[0].Capabilities.PTZ {
 		t.Fatalf("injected PTZ provider was not honored: %#v", got.Cameras)
+	}
+	step := httptest.NewRecorder()
+	stepRequest := httptest.NewRequest(http.MethodPost, "/v2/cameras/xiaomi_0123456789abcdef/ptz/step", strings.NewReader(`{"direction":"left"}`))
+	stepRequest.Header.Set("Authorization", "Bearer secret")
+	h.ServeHTTP(step, stepRequest)
+	if step.Code != http.StatusOK || !strings.Contains(step.Body.String(), `"write_status":"sent"`) || len(ptzProvider.calls) != 1 || ptzProvider.calls[0] != "xiaomi_0123456789abcdef:left" {
+		t.Fatalf("injected PTZ step HTTP %d: %s", step.Code, step.Body.String())
 	}
 }
 

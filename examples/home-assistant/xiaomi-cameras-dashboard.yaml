@@ -10,7 +10,7 @@ views:
         columns: 2
         square: false
         cards:
-          - type: picture-elements
+          - type: custom:xiaomi-live-camera
             title: Mi 360
             camera_image: camera.xiaomi_mi_360
             camera_view: live
@@ -86,11 +86,12 @@ views:
                   <<: *ptz_style
                   right: 62px
                   bottom: 8px
-              - type: icon
+              - &snapshot_button
+                type: icon
                 entity: script.xiaomi_camera_snapshot
                 icon: mdi:camera
                 title: Snímek
-                tap_action:
+                tap_action: &snapshot_action
                   action: perform-action
                   perform_action: script.xiaomi_camera_snapshot
                   data:
@@ -102,11 +103,12 @@ views:
                     <<: *ptz_style
                     bottom: 8px
                   left: 12px
-              - type: icon
+              - &record_button
+                type: icon
                 entity: script.xiaomi_camera_record
                 icon: mdi:record-circle-outline
                 title: Záznam (20 s)
-                tap_action:
+                tap_action: &record_action
                   action: perform-action
                   perform_action: script.xiaomi_camera_record
                   data:
@@ -116,7 +118,7 @@ views:
                 style:
                   <<: *capture_style
                   left: 62px
-          - type: picture-elements
+          - type: custom:xiaomi-live-camera
             title: C201
             camera_image: camera.xiaomi_c201
             camera_view: live
@@ -209,9 +211,73 @@ views:
                 style:
                   <<: *capture_style
                   left: 62px
-          - type: markdown
+          - type: custom:xiaomi-live-camera
             title: C400
-            content: Živý obraz zatím neověřen.
-          - type: markdown
-            title: Outdoor
-            content: Gateway pro tento model zatím neposkytuje obraz.
+            camera_image: camera.xiaomi_smart_camera_c400
+            camera_view: live
+            elements:
+              - type: icon
+                entity: button.xiaomi_smart_camera_c400_ptz_up
+                icon: mdi:arrow-up
+                title: Nahoru
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target: {entity_id: button.xiaomi_smart_camera_c400_ptz_up}
+                hold_action: {action: none}
+                double_tap_action: {action: none}
+                style: {<<: *ptz_style, right: 62px, bottom: 108px}
+              - type: icon
+                entity: button.xiaomi_smart_camera_c400_ptz_left
+                icon: mdi:arrow-left
+                title: Vlevo
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target: {entity_id: button.xiaomi_smart_camera_c400_ptz_left}
+                hold_action: {action: none}
+                double_tap_action: {action: none}
+                style: {<<: *ptz_style, right: 112px, bottom: 58px}
+              - type: icon
+                entity: button.xiaomi_smart_camera_c400_ptz_right
+                icon: mdi:arrow-right
+                title: Vpravo
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target: {entity_id: button.xiaomi_smart_camera_c400_ptz_right}
+                hold_action: {action: none}
+                double_tap_action: {action: none}
+                style: {<<: *ptz_style, right: 12px, bottom: 58px}
+              - type: icon
+                entity: button.xiaomi_smart_camera_c400_ptz_down
+                icon: mdi:arrow-down
+                title: Dolů
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target: {entity_id: button.xiaomi_smart_camera_c400_ptz_down}
+                hold_action: {action: none}
+                double_tap_action: {action: none}
+                style: {<<: *ptz_style, right: 62px, bottom: 8px}
+              - <<: *snapshot_button
+                tap_action:
+                  <<: *snapshot_action
+                  data: {camera_entity: camera.xiaomi_smart_camera_c400}
+              - <<: *record_button
+                tap_action:
+                  <<: *record_action
+                  data: {camera_entity: camera.xiaomi_smart_camera_c400}
+          - type: custom:xiaomi-live-camera
+            title: Outdoor AW300
+            camera_image: camera.outdoor_ulice
+            camera_view: live
+            elements:
+              - <<: *snapshot_button
+                tap_action:
+                  <<: *snapshot_action
+                  data: {camera_entity: camera.outdoor_ulice}
+              - <<: *record_button
+                tap_action:
+                  <<: *record_action
+                  data: {camera_entity: camera.outdoor_ulice}
