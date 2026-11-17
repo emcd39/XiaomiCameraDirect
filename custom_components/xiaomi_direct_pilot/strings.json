@@ -55,7 +55,8 @@
         "title": "Cameras in Home Assistant",
         "description": "Choose the cameras to use in Home Assistant.",
         "data": {
-          "camera_ids": "Cameras"
+          "camera_ids": "Cameras",
+          "c400_low_resolution": "C400 cameras to stream at lower resolution"
         }
       }
     }

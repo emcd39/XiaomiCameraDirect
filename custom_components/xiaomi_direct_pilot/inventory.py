@@ -12,14 +12,14 @@ from aiohttp import ClientSession, DummyCookieJar
 from homeassistant.components.network import async_get_adapters
 from homeassistant.helpers.device_registry import DeviceInfo
 
-from .const import DOMAIN
+from .const import C400_MODEL, DOMAIN
 from .xiaomi_direct.account import XiaomiAccount
 from .xiaomi_direct.cs2_tcp import CS2Error, validate_lan
 
 
 QUALITY = {
     "xiaomi.camera.c201": 0,
-    "chuangmi.camera.039a04": 3,
+    C400_MODEL: 3,
     "chuangmi.camera.026c02": 2,
     "mxiang.camera.mod13": 0,
 }

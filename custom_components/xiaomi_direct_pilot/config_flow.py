@@ -9,7 +9,7 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.selector import TextSelector, TextSelectorConfig, TextSelectorType
 import voluptuous as vol
 
-from .const import DOMAIN, NAME
+from .const import C400_LOW_RESOLUTION, C400_MODEL, DOMAIN, NAME
 from .inventory import account_cameras, resolve_cameras
 from .xiaomi_direct.account import AccountChallenge, AccountError, XiaomiAccount
 
@@ -134,11 +134,19 @@ class DirectCameraConfigFlow(ConfigFlow, domain=DOMAIN):
 
 class DirectCameraOptionsFlow(OptionsFlowWithReload):
     async def async_step_init(self, user_input=None):
-        choices = {item["device_id"]: item["name"] for item in self.config_entry.data["cameras"]}
-        selected = [key for key in self.config_entry.options.get("camera_ids", choices) if key in choices]
         if user_input is not None:
             return self.async_create_entry(data=user_input)
+        cameras = self.config_entry.data["cameras"]
+        options = self.config_entry.options
+        choices = {item["device_id"]: item["name"] for item in cameras}
+        selected = [key for key in options.get("camera_ids", choices) if key in choices]
+        fields = {vol.Required("camera_ids", default=selected): cv.multi_select(choices)}
+        if self.config_entry.data["region"] == "de":
+            c400s = {item["device_id"]: item["name"] for item in cameras if item["model"] == C400_MODEL}
+            if c400s:
+                reduced = [key for key in options.get(C400_LOW_RESOLUTION, ()) if key in c400s]
+                fields[vol.Optional(C400_LOW_RESOLUTION, default=reduced)] = cv.multi_select(c400s)
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema({vol.Required("camera_ids", default=selected): cv.multi_select(choices)}),
+            data_schema=vol.Schema(fields),
         )

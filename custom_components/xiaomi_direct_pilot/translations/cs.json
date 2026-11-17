@@ -55,7 +55,8 @@
         "title": "Kamery v Home Assistantu",
         "description": "Vyber kamery, které chceš v Home Assistantu používat.",
         "data": {
-          "camera_ids": "Kamery"
+          "camera_ids": "Kamery",
+          "c400_low_resolution": "Kamery C400 s nižším rozlišením"
         }
       }
     }

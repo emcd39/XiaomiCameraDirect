@@ -94,6 +94,7 @@ class C201SessionTest(unittest.IsolatedAsyncioTestCase):
         key = crypto_box_beforenm(crypto_scalarmult_base(client_secret), camera_secret)
         nonce = b"12345678"
         frame = bytes.fromhex("000000012601aa")
+        qualities = (0, 2, 3)
         opens = []
         handlers = asyncio.Queue()
 
@@ -109,7 +110,9 @@ class C201SessionTest(unittest.IsolatedAsyncioTestCase):
                 start = await read_packet(reader)
                 self.assertEqual(start[6:8], b"\x00\x01")
                 self.assertEqual(start[12:16], bytes.fromhex("00001001"))
-                self.assertEqual(crypt(key, start[16:24], start[24:]), b'\x00\x00\x01\x02{"videoquality":0,"enableaudio":0}')
+                command = crypt(key, start[16:24], start[24:])
+                self.assertEqual(command[:4], b"\x00\x00\x01\x02")
+                self.assertEqual(json.loads(command[4:]), {"videoquality": qualities[len(opens)], "enableaudio": 0})
                 encrypted = nonce + crypt(key, nonce, frame)
                 media = message(struct.pack("<4xIIIQ8x", 5, 7, 0, 1000) + encrypted)
                 writer.write(wrapper(bytes.fromhex("f1e00000")) + data(2, media[:3]) + data(2, media[3:]))
@@ -134,14 +137,14 @@ class C201SessionTest(unittest.IsolatedAsyncioTestCase):
 
         async with server, asyncio.timeout(5):
             with patch.object(c201_session, "open_transport", new=connect):
-                for _ in range(2):
-                    async with c201_session.open_video(None, None, None, credentials) as video:
+                for quality in qualities:
+                    async with c201_session.open_video(None, None, None, credentials, quality=quality) as video:
                         received = await video.read(timeout=1)
                         self.assertEqual((received.codec, received.sequence, received.payload), ("h265", 7, frame))
                         self.assertTrue(received.random_access)
                         await video.step(1)
                     await (await handlers.get())
-        self.assertEqual(len(opens), 2)
+        self.assertEqual(len(opens), len(qualities))
 
     async def test_discovery_rejects_non_lan_target(self):
         with self.assertRaisesRegex(cs2_tcp.CS2Error, "selected private LAN"):

@@ -15,6 +15,9 @@ and the keys needed to open a new local camera session.
    cameras are included by default. Use the camera entity for live video,
    snapshots and short HA recordings. PTZ buttons appear for the models with
    a mapped directional profile and become available during a live session.
+   For a C400 in the European region, select the camera under **C400 cameras
+   to stream at lower resolution** to reduce bandwidth. Saving reloads the
+   account entry and applies the selected profile when the stream next opens.
 
 The direct integration runs inside HA Core. The Go gateway is available
 separately for diagnostics, reference testing and standalone deployments.

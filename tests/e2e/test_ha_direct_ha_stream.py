@@ -16,6 +16,7 @@ import av
 from homeassistant.bootstrap import async_setup_hass
 from homeassistant.components.camera import async_request_stream
 from homeassistant.components.camera.helper import get_camera_from_entity_id
+from homeassistant.data_entry_flow import InvalidData
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry
 from homeassistant.runner import RuntimeConfig
@@ -154,10 +155,10 @@ class DirectHaStreamTest(unittest.IsolatedAsyncioTestCase):
                 self.sequence += 1
                 return VideoFrame("h265", self.sequence, 0, self.sequence * 50, picture, True)
 
-        def fake_opener(_hass, _config, _account, control, *, entry):
+        def fake_opener(_hass, config, _account, control, *, quality, entry):
             @asynccontextmanager
             async def fake_open():
-                starts.append(1)
+                starts.append((config["model"], quality))
                 video = FakeVideo()
                 control.set_video(video)
                 try:
@@ -195,13 +196,15 @@ stream:
                     devices=AsyncMock(return_value={"list": [
                         {"model": "xiaomi.camera.c201", "did": "mock-c201", "name": "Xiaomi C201",
                          "localip": "192.168.99.2"},
-                        {"model": "chuangmi.camera.039a04", "did": "mock-c400", "name": "Other camera"},
+                        {"model": "chuangmi.camera.039a04", "did": "mock-c400", "name": "Other camera",
+                         "localip": "192.168.99.4"},
+                        {"model": "test.camera.unknown", "did": "mock-unknown", "name": "Unknown camera"},
                     ]}),
                 )
                 async def resolve(_hass, inventory):
                     return [
                         {**data, "source_ip": "192.168.99.3", "camera_lan": "192.168.99.0/24"}
-                        if data["device_id"] == "mock-c201" else data
+                        if data["camera_ip"] else data
                         for data in inventory.values()
                     ]
 
@@ -221,7 +224,9 @@ stream:
                     self.assertNotIn("password", entry.data)
                     self.assertEqual(entry.title, "Xiaomi Camera Direct")
                     await hass.async_block_till_done()
-                self.assertEqual(hass.states.get("camera.other_camera_direct").state, "unavailable")
+                c400_id = "camera.other_camera_direct"
+                self.assertEqual(hass.states.get("camera.unknown_camera_direct").state, "unavailable")
+                self.assertEqual(hass.states.get(c400_id).attributes["requested_video_profile"], 3)
                 self.assertEqual(starts, [])
                 hls = await async_request_stream(hass, "camera.xiaomi_c201_direct", "hls")
                 url = f"http://127.0.0.1:{port}{hls}"
@@ -243,7 +248,7 @@ stream:
                     target={"entity_id": "button.xiaomi_c201_direct_ptz_left"},
                 )
                 self.assertEqual(moves, [1])
-                self.assertEqual(starts, [1])
+                self.assertEqual(starts, [("xiaomi.camera.c201", 0)])
                 registry = entity_registry.async_get(hass)
                 camera_id = "camera.xiaomi_c201_direct"
                 device_id = registry.async_get(camera_id).device_id
@@ -273,14 +278,39 @@ stream:
                     options = hass.config_entries.options
                     form = await options.async_init(entry.entry_id)
                     self.assertEqual(form["step_id"], "init")
+                    with self.assertRaises(InvalidData):
+                        await options.async_configure(form["flow_id"], {
+                            "camera_ids": ["mock-c201"], "c400_low_resolution": ["mock-c201"],
+                        })
+                    result = await options.async_configure(form["flow_id"], {
+                        "camera_ids": ["mock-c201", "mock-c400"], "c400_low_resolution": ["mock-c400"],
+                    })
+                    self.assertEqual(result["type"], "create_entry")
+                    await hass.async_block_till_done()
+                    self.assertEqual(hass.states.get(c400_id).attributes["requested_video_profile"], 2)
+                    self.assertEqual(starts, [("xiaomi.camera.c201", 0)])
+                    c400 = get_camera_from_entity_id(hass, c400_id)
+                    async with ClientSession() as client, client.get(await c400.stream_source(), timeout=5) as stream:
+                        self.assertEqual(await stream.content.readexactly(1), b"\x47")
+                    self.assertEqual(starts, [("xiaomi.camera.c201", 0), ("chuangmi.camera.039a04", 2)])
+
+                    form = await options.async_init(entry.entry_id)
+                    result = await options.async_configure(form["flow_id"], {
+                        "camera_ids": ["mock-c201", "mock-c400"], "c400_low_resolution": [],
+                    })
+                    self.assertEqual(result["type"], "create_entry")
+                    await hass.async_block_till_done()
+                    self.assertEqual(hass.states.get(c400_id).attributes["requested_video_profile"], 3)
+
+                    form = await options.async_init(entry.entry_id)
                     result = await options.async_configure(form["flow_id"], {"camera_ids": ["mock-c201"]})
                     self.assertEqual(result["type"], "create_entry")
                     await hass.async_block_till_done()
                 with self.assertRaisesRegex(HomeAssistantError, "Camera not found"):
-                    get_camera_from_entity_id(hass, "camera.other_camera_direct")
+                    get_camera_from_entity_id(hass, c400_id)
                 self.assertIsNotNone(get_camera_from_entity_id(hass, camera_id))
                 self.assertEqual(registry.async_get(camera_id).device_id, device_id)
-                self.assertEqual(starts, [1])
+                self.assertEqual(len(starts), 2)
             finally:
                 try:
                     if hass is not None:
@@ -289,4 +319,4 @@ stream:
                     for handler in set(root_logger.handlers) - previous_handlers:
                         root_logger.removeHandler(handler)
                         handler.close()
-        self.assertEqual(closes, [1])
+        self.assertEqual(closes, [1, 1])

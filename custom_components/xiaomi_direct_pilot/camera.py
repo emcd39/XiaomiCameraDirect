@@ -9,6 +9,7 @@ from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.helpers import config_validation as cv
 import voluptuous as vol
 
+from .const import C400_LOW_RESOLUTION, C400_MODEL
 from .inventory import QUALITY, camera_device_info, create_account
 from .xiaomi_direct.account import AccountAuthorizationError
 from .xiaomi_direct.c201_session import open_video, request_signed_session
@@ -29,7 +30,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
 })
 
 
-def _video_opener(hass, config, account=None, control=None, *, entry=None):
+def _video_opener(hass, config, account=None, control=None, *, quality, entry=None):
     @asynccontextmanager
     async def connect():
         if account is None:
@@ -44,7 +45,7 @@ def _video_opener(hass, config, account=None, control=None, *, entry=None):
                 raise
         async with open_video(
             config["camera_ip"], config["source_ip"], config["camera_lan"], credentials,
-            quality=QUALITY[config.get("model", "xiaomi.camera.c201")],
+            quality=quality,
             preference="udp" if config.get("model") == "chuangmi.camera.026c02" else "auto",
         ) as video:
             if control is not None:
@@ -68,19 +69,25 @@ async def async_setup_entry(hass, entry, async_add_entities):
         config = {**entry.data, **item}
         media = None
         model = item["model"]
-        if model in QUALITY and "source_ip" in item:
+        quality = QUALITY.get(model)
+        if (
+            model == C400_MODEL and entry.data["region"] == "de"
+            and item["device_id"] in entry.options.get(C400_LOW_RESOLUTION, ())
+        ):
+            quality = 2
+        if quality is not None and "source_ip" in item:
             config["camera_ip"] = IPv4Address(item["camera_ip"])
             config["source_ip"] = IPv4Address(item["source_ip"])
             config["camera_lan"] = IPv4Network(item["camera_lan"])
             media = LocalMediaSource(
                 _video_opener(
                     hass, config, entry.runtime_data.account, entry.runtime_data.ptz.get(item["device_id"]),
-                    entry=entry,
+                    quality=quality, entry=entry,
                 ),
                 label=model,
-                attempts=2 if model in {"chuangmi.camera.039a04", "mxiang.camera.mod13"} else 1,
+                attempts=2 if model in {C400_MODEL, "mxiang.camera.mod13"} else 1,
             )
-        entities.append(DirectCamera(item["name"], item["device_id"], model, media))
+        entities.append(DirectCamera(item["name"], item["device_id"], model, media, quality))
     async_add_entities(entities)
 
 
@@ -89,14 +96,15 @@ def _add_camera(hass, config, async_add_entities):
         validate_lan(config["camera_ip"], config["source_ip"], config["camera_lan"])
     except CS2Error as error:
         raise vol.Invalid(str(error)) from None
+    quality = QUALITY["xiaomi.camera.c201"]
     async_add_entities([
         DirectCamera(config["name"], config["device_id"], "xiaomi.camera.c201",
-                     LocalMediaSource(_video_opener(hass, config)))
+                     LocalMediaSource(_video_opener(hass, config, quality=quality)), quality)
     ])
 
 
 class DirectCamera(Camera):
-    def __init__(self, name, device_id, model, media):
+    def __init__(self, name, device_id, model, media, quality):
         super().__init__()
         self._attr_name = name
         identity = "c201" if model == "xiaomi.camera.c201" else "camera"
@@ -106,6 +114,8 @@ class DirectCamera(Camera):
         self._attr_available = media is not None
         self._attr_supported_features = CameraEntityFeature.STREAM if media else CameraEntityFeature(0)
         self._attr_extra_state_attributes = {"model_id": model}
+        if quality is not None:
+            self._attr_extra_state_attributes["requested_video_profile"] = quality
         if media is None:
             self._attr_extra_state_attributes["direct_status"] = (
                 "no_lan_address" if model in QUALITY else "unsupported_model"

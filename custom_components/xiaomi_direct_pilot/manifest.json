@@ -1,7 +1,7 @@
 {
   "domain": "xiaomi_direct_pilot",
   "name": "Xiaomi Camera Direct",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "documentation": "https://github.com/moukas/xiaomi-local-gateway/blob/master/README.md",
   "codeowners": [],
   "config_flow": true,

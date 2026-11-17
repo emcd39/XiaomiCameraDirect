@@ -92,6 +92,19 @@ HA otevře kameru až při požadavku na obraz. Video zůstává na LAN a HA z n
 - **Xiaomi Camera Direct 0.2.0 v nativním HA 2026.10.4** – aktualizace zachovala ID položky i původní autorizaci. Živý registr HA obsahuje čtyři zařízení, čtyři původní entity kamer a 12 tlačítek přiřazených ke kamerám. Přímo z entity C201 uložil HA JPEG (51 678 bajtů) a MP4 (21,99 s). FFmpeg dekódoval první dvě sekundy MP4 s návratovým kódem 0. Z přímé entity C400 dekódoval 99 snímků za 5 s videa, celý pokus trval 12 s. Ve zkušebním HA se simulátorem prošla obnova přihlášení pro stejný účet, odmítnutí jiného účtu a změna výběru kamer se zachováním ID. Prošlo 27 rychlých testů a pět mediálních a HA E2E testů. Po simulovaném pádu spojení dostali dva aktivní odběratelé klíčový snímek z jedné nové relace s rostoucí časovou značkou. Obnova po fyzickém výpadku zbývá ověřit.
 - **Kontrola finálního nasazení 0.2.0** – po restartu testovacího HA prošel přímý HLS obou fyzických kamer. FFmpeg dekódoval z C201 104 snímků a z C400 99 snímků, vždy za pět sekund videa. Celé zkoušky trvaly 7 s a 23 s včetně dekódování. Během startu C400 zaznamenal HA jednu chybu demuxu. Jednotlivý úspěšný výsledek nedokládá splnění cíle pro studené starty.
 
+### Volba rozlišení C400 (F03)
+
+Na fyzické `chuangmi.camera.039a04` v regionu DE se dvěma krátkými přímými relacemi po LAN ověřily tyto profily:
+
+| Profil MISS | Dekódovaný obraz | Snímků/s | Tok video payloadu |
+| --- | --- | --- | --- |
+| `2` | H.265, 864 × 480 | 19,9 | 330 kbit/s |
+| `3` | H.265, 2560 × 1440 | 19,5 | 3140 kbit/s |
+
+Hodnoty toku pocházejí z 2,5 s záznamu metadat v konkrétní scéně. **Konfigurovat** nabízí od verze 0.2.1 výběr C400 pro nižší rozlišení. Neoznačené C400 používají výchozí profil `3`. Hodnota `requested_video_profile` v entitě uvádí profil vyžádaný od kamery. Uložení nastavení znovu načte účet a další přehrávání otevře relaci se zvoleným profilem. Regrese ověřuje odmítnutí jiné kamery, přechod z `3` na `2` a zpět, nulové otevření bez odběratele a bajty příkazu MISS u obou hodnot.
+
+**PASS (fyzická C400, nativní HA 2026.10.4).** Volba v českém formuláři přepnula živou kartu na 864 × 480 a čas přehrávání postupoval. Po uložení výchozího profilu karta krátce ukazovala předchozí rozlišení. Po novém otevření panelu přehrávala 2560 × 1440. Výchozí profil byl po přejímce ponechán. Prošlo 27 rychlých a pět mediálních a HA E2E testů.
+
 ### Živá referenční sestava na nativních Windows
 
 - **Odezva PTZ** – integrace pošle povel rovnou na aktivní relaci. Pouze po explicitní odpovědi `ptz_session_unavailable` připraví zdroj a pošle jeden krok znovu. Windows převodník mapuje tuto odpověď ze starší běžící gateway. Cílený požadavek HA pro pohyb C201 vlevo dosáhl zápisu povelu za 11 ms, kamera odpověděla za dalších 207 ms a HA vrátil HTTP 200 za 228 ms. Fyzický začátek pohybu ani jeho zpoždění v HLS nebyly měřeny.

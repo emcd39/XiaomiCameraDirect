@@ -12,7 +12,7 @@ With Home Assistant and FFmpeg installed, run
 `python -B -m unittest discover -s tests/e2e -p test_ha_direct_ha_stream.py`
 to boot a disposable HA instance, decode its HLS, verify a JPEG snapshot and confirm
 connection cleanup, shared transport recovery for active viewers, PTZ routing, reauthentication,
-camera selection and retained entity identity.
+camera selection, C400 profile switching and retained entity identity.
 
 From the repository root, run the quick camera regression in a disposable
 Linux container:
