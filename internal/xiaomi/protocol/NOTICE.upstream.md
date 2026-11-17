@@ -16,6 +16,10 @@ Upstream revision: `v1.9.14` (commit `b5948cfb25404cc5cb37b166ecaa2dca20b11d4b`)
 | `internal/miss/client.go` | `pkg/xiaomi/miss/client.go` |
 | `internal/miss/cs2/conn.go` | `pkg/xiaomi/miss/cs2/conn.go` |
 
+The Python pilot in `xiaomi_direct` uses the same MIT-licensed Go reference
+for CS2 framing, MISS setup, and media. See the copy of
+[the go2rtc license](LICENSE.go2rtc) next to this notice.
+
 ## What was changed
 
 - `core.RandString` was inlined so the bridge does not pull in `pkg/core`.

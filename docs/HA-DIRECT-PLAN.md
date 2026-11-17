@@ -2,6 +2,10 @@
 
 Plán z 16. 11. 2026. Popisuje cílové řešení a podmínky vydání. Výsledky dosavadních zkoušek patří k režimu s Go gateway a jsou zaznamenané v [přehledu přejímek](LOCAL-CAMERA-PROGRESS.md).
 
+Přímá integrace se v Home Assistantu jmenuje **Xiaomi Camera Direct**. Stávající přímá položka používá původní interní doménu `xiaomi_direct_pilot`, aby se při přejmenování zachovaly entity a dashboard. Přechod z externího režimu `xiaomi_local_gateway` zůstává samostatným úkolem D2.
+
+Ve verzi 0.2.0 je v nativním testovacím HA ověřený obraz z C201 a C400 a JPEG i krátký MP4 z C201. Obnova autorizace, výběr kamer a sdílené obnovení přerušené relace mají regresní ověření se simulátorem. D1 čeká na fyzickou přejímku v HA OS. Pro dokončení D2 zbývá přechod z gateway a fyzická přejímka obnovy spojení a pohybu. V D3 chybí stabilní přímé video AW300 a opakovaná přejímka Mi 360 po jejím připojení. Export přímého zdroje pro Frigate patří do D4.
+
 ## 1. Výsledek pro uživatele
 
 - V HA OS i HA Container uživatel nainstaluje vlastní integraci, v **Nastavení → Zařízení a služby** přidá Xiaomi kamery, propojí účet v příslušném regionu a vybere kamery. Přímý režim nevyžaduje URL gateway, ručně získaný token, další doplněk ani další kontejner.

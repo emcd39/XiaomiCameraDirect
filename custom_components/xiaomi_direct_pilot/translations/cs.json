@@ -1,0 +1,63 @@
+{
+  "title": "Xiaomi Camera Direct",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Přihlášení k Xiaomi Home",
+        "description": "Vyber přihlášení přes QR a potvrď přístup v aplikaci Xiaomi Home. Při přihlášení heslem vyplň údaje o účtu níže.",
+        "data": {
+          "region": "Region účtu Xiaomi Home (pro Evropu obvykle de)",
+          "method": "Způsob přihlášení",
+          "username": "E-mail nebo jméno účtu Xiaomi",
+          "password": "Heslo k účtu Xiaomi"
+        }
+      },
+      "qr": {
+        "title": "Potvrď přístup v Xiaomi Home",
+        "description": "Naskenuj tento kód v aplikaci Xiaomi Home a potvrď přístup. Potom v Home Assistantu klikni na **Odeslat**.\n\n![Přihlašovací QR kód Xiaomi Home]({qr_image})\n\n[Otevřít QR obrázek na samostatné kartě]({qr_image}) · [Otevřít stránku Xiaomi]({qr_page})"
+      },
+      "verify": {
+        "title": "Ověření účtu Xiaomi",
+        "description": "Zadej ověřovací kód, který ti Xiaomi poslalo.",
+        "data": {
+          "code": "Ověřovací kód"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Obnov přihlášení k Xiaomi Home",
+        "description": "Potvrď přístup ke stejnému Xiaomi účtu.",
+        "data": {
+          "method": "Způsob přihlášení",
+          "username": "E-mail nebo jméno účtu Xiaomi",
+          "password": "Heslo k účtu Xiaomi"
+        }
+      }
+    },
+    "error": {
+      "cannot_sign_in": "Přihlášení se nezdařilo. Zkontroluj účet a region.",
+      "credentials_required": "Pro přihlášení heslem zadej účet Xiaomi a heslo.",
+      "qr_pending": "Xiaomi zatím přístup nepotvrdilo. Potvrď jej v aplikaci Xiaomi Home a potom formulář odešli znovu.",
+      "captcha_required": "Xiaomi požaduje CAPTCHA. Průvodce ji zatím neumí zobrazit.",
+      "verification_required": "Xiaomi požaduje způsob ověření, který průvodce zatím neumí dokončit.",
+      "verification_failed": "Ověřovací kód byl odmítnut nebo vypršel."
+    },
+    "abort": {
+      "no_cameras": "V tomto účtu a regionu Xiaomi nejsou žádné kamery.",
+      "qr_expired": "Kód vypršel. Spusť přihlášení znovu pro nový kód.",
+      "already_configured": "Tento účet Xiaomi už je přidaný.",
+      "wrong_account": "Byl použit jiný účet Xiaomi. Přihlas se k původnímu účtu.",
+      "reauth_successful": "Přihlášení k účtu Xiaomi bylo obnoveno."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Kamery v Home Assistantu",
+        "description": "Vyber kamery, které chceš v Home Assistantu používat.",
+        "data": {
+          "camera_ids": "Kamery"
+        }
+      }
+    }
+  }
+}

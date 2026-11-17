@@ -1,11 +1,28 @@
-# Xiaomi Local Gateway
+# Xiaomi Camera Direct
 
-**Status: Developer preview.** The RTSP/ONVIF bridge and native managed
-Xiaomi MISS/CS2 gateway are available. Physical validation still varies by model.
+Xiaomi cameras in Home Assistant with video and supported controls over the
+local network. Home Assistant uses the Xiaomi account for sign-in, inventory,
+and the keys needed to open a new local camera session.
 
-One integration layer for Xiaomi cameras, Home Assistant and Frigate. Built in
-Go with a small Python HACS integration. Inspired by independent Xiaomi reverse
-engineering without copying the Windows UI.
+## Direct setup in Home Assistant
+
+1. Copy `custom_components/xiaomi_direct_pilot` into the Home Assistant
+   configuration directory under `custom_components` and restart HA.
+2. Open **Settings → Devices & services → Add integration** and choose
+   **Xiaomi Camera Direct**. Select your Xiaomi Home region and approve
+   access to the account.
+3. Use **Configure** on the account entry to select cameras. All discovered
+   cameras are included by default. Use the camera entity for live video,
+   snapshots and short HA recordings. PTZ buttons appear for the models with
+   a mapped directional profile and become available during a live session.
+
+The direct integration runs inside HA Core. The Go gateway is available
+separately for diagnostics, reference testing and standalone deployments.
+See the [direct integration test record](docs/HA-DIRECT-PILOT.md) for hardware
+results and the [delivery plan](docs/HA-DIRECT-PLAN.md) for Frigate and
+remaining acceptance tests.
+
+## Xiaomi Local Gateway
 
 The bridge can use an existing RTSP/ONVIF server such as the `xiaomi-onvif`
 patched-go2rtc pair. Managed mode uses an authorized Xiaomi account to discover
@@ -51,7 +68,7 @@ to the Linux host's LAN IP, and `XLG_RTSP_LISTEN` to that IP on port 8554
 HTTP address and API token. The API and RTSP are reachable on the specified
 Linux interface. Keep them on your trusted network.
 
-## Run the developer preview
+## Run the standalone gateway
 
 1. Prepare an RTSP + ONVIF source, ideally using the upstream instructions in
    [examples/UPSTREAM.md](examples/UPSTREAM.md). **Verify that its RTSP works

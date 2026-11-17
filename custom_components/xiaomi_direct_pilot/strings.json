@@ -1,0 +1,63 @@
+{
+  "title": "Xiaomi Camera Direct",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Sign in to Xiaomi Home",
+        "description": "Use Xiaomi Home QR to approve access from your phone. For password sign-in, enter the account details below.",
+        "data": {
+          "region": "Xiaomi Home region (de for most European accounts)",
+          "method": "Sign-in method",
+          "username": "Xiaomi account email or username",
+          "password": "Xiaomi account password"
+        }
+      },
+      "qr": {
+        "title": "Approve access in Xiaomi Home",
+        "description": "Scan this code in Xiaomi Home and approve access. Then select **Submit** in Home Assistant.\n\n![Xiaomi Home sign-in QR code]({qr_image})\n\n[Open the QR image in a new tab]({qr_image}) \u00b7 [Open the Xiaomi approval page]({qr_page})"
+      },
+      "verify": {
+        "title": "Verify your Xiaomi account",
+        "description": "Enter the code Xiaomi sent to your account.",
+        "data": {
+          "code": "Verification code"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Sign in to Xiaomi Home again",
+        "description": "Approve access to the same Xiaomi account.",
+        "data": {
+          "method": "Sign-in method",
+          "username": "Xiaomi account email or username",
+          "password": "Xiaomi account password"
+        }
+      }
+    },
+    "error": {
+      "cannot_sign_in": "Could not sign in. Check the account details and region.",
+      "credentials_required": "Enter the Xiaomi account and password when using password sign-in.",
+      "qr_pending": "Xiaomi has not confirmed approval yet. Confirm in Xiaomi Home, then submit again.",
+      "captcha_required": "Xiaomi requested a CAPTCHA. The setup wizard cannot display it yet.",
+      "verification_required": "Xiaomi requested an account verification method the setup wizard cannot complete.",
+      "verification_failed": "The verification code was rejected or expired."
+    },
+    "abort": {
+      "no_cameras": "There are no cameras in this Xiaomi account and region.",
+      "qr_expired": "The code expired. Start sign-in again to generate a new code.",
+      "already_configured": "This Xiaomi account is already configured.",
+      "wrong_account": "A different Xiaomi account was used. Sign in to the original account.",
+      "reauth_successful": "Xiaomi account authorization was renewed."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Cameras in Home Assistant",
+        "description": "Choose the cameras to use in Home Assistant.",
+        "data": {
+          "camera_ids": "Cameras"
+        }
+      }
+    }
+  }
+}

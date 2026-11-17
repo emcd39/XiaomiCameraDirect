@@ -6,7 +6,7 @@ import unittest
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
 
-from xiaomi_direct.miss_media import decode_video_frame
+from custom_components.xiaomi_direct_pilot.xiaomi_direct.miss_media import decode_video_frame
 
 
 def ffmpeg(*args, source=None):

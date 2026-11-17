@@ -1,4 +1,4 @@
-# Přímá integrace HA: D0 a začátek D1
+# Xiaomi Camera Direct – záznam testů
 
 ## Výchozí stav z 16. 11. 2026
 
@@ -55,7 +55,42 @@ První příkaz pouze ověří zdrojovou IP vybranou systémem a neodesílá dat
 
 - **BLOCKED (fyzická síť)** – dočasná změna `.wslconfig` skutečně přepnula Ubuntu do režimu `mirrored`, potvrzeného příkazem `wslinfo --networking-mode`. Preflight na kontrolní adrese ve stejné historické podsíti opět skončil `source_outside_camera_subnet` (exit 2). Sonda neodeslala datagram ke kameře. Po pokusu byla obnovena původní konfigurace NAT, všech pět existujících WSLc kontejnerů hlásilo `running` a testovací HA odpověděl HTTP 200.
 - **PASS (MISS video)** – Python dešifruje nonce a šifrovanou část mediální zprávy z již sjednaného klíče. Výstup odpovídá syntetickému ChaCha20 vektoru vytvořenému Go referencí. Prošlo 11 rychlých testů na Windows Python 3.14 a v HA image `2026.10.4`. V izolovaném Linuxovém HA image bez sítě navíc FFmpeg dekódoval celý syntetický H.265 snímek prošlý šifrováním, dešifrováním a parserem.
-- **OPEN** – navázání transportu CS2, získání a sjednání klíče, příjem skutečného streamu v HA a fyzická přejímka C201. Příští offline zkouška přidá kontrolovanou CS2 relaci před ověřenou mediální vrstvu.
+- **Přímý klient C201** – klient umí požádat přihlášený účet o podepsaný dočasný klíč, vyjednat CS2/TCP, přihlásit se ke kameře a otevřít video bez Go gateway. Simulátor ověřuje změnu portu během handshake, přihlášení, šifrovaný start videa, složení rozděleného snímku a dvě otevření po sobě. Zatím je dostupný jen TCP transport.
+
+### Přímé kamery v Home Assistantu
+
+Zkopíruj celý adresář `custom_components/xiaomi_direct_pilot` do stejnojmenného adresáře v konfiguraci HA a restartuj HA. V **Nastavení → Zařízení a služby → Přidat integraci** najdi **Xiaomi Camera Direct** a vyber region. S výchozí volbou **Xiaomi Home QR** schval účet pomocí skeneru účtu Xiaomi v telefonu a odešli QR formulář v HA. Průvodce přidá všechny nalezené kamery. Výběr lze změnit přes **Konfigurovat**. Po odmítnutí uložené autorizace nabídne HA přihlášení ke stejnému účtu. Pro adresu používá místní záznam odpovídající MAC z inventáře, případně IPv4 adresu, kterou poskytlo Xiaomi. Zdrojovou adresu vybírá podle skutečné trasy ke kameře. Entita bez podporovaného modelu nebo místní adresy se zobrazí jako nedostupná. Průvodce ukládá autorizaci pro další spojení. Heslo se neukládá.
+
+Pro nové nastavení použijte průvodce výše; nevyžaduje ruční kopírování tokenů do YAML. Jen při obnově již existující uložené autorizace lze místo průvodce přidat položku do sekce `camera:`:
+
+```yaml
+camera:
+  - platform: xiaomi_direct_pilot
+    name: Xiaomi C201 Direct
+    device_id: !secret xiaomi_direct_c201_id
+    camera_ip: 192.168.99.2
+    source_ip: 192.168.99.3
+    camera_lan: 192.168.99.0/24
+    region: de
+    account_user_id: !secret xiaomi_direct_user_id
+    account_pass_token: !secret xiaomi_direct_pass_token
+```
+
+Nahraď ukázkové adresy adresou C201, lokální IPv4 adresou HA a jejich společnou podsítí. Hodnoty `!secret` patří do místního `secrets.yaml`. Po konfiguraci otevři novou entitu kamery s názvem končícím na **Direct**. Průvodce zatím nepodporuje CAPTCHA. Přechod z Go gateway je vedený v etapě D2.
+
+HA otevře kameru až při požadavku na obraz. Video zůstává na LAN a HA z něj vytvoří HLS a snímek. C201, C400 a Mi 360 mají v přímé integraci čtyři krokové směry PTZ. Ovládání používá právě otevřenou relaci a nevytváří samostatné připojení ke kameře. Pevná AW300 šipky nemá.
+
+- **PASS (simulovaný HA stream)** – test `tests/e2e/test_ha_direct_ha_stream.py` používá simulovaný C201, vytvoří položku přes průvodce bez hesla, dekóduje HLS snímek 64 × 64, získá JPEG a kontroluje ukončení relace. Tento výsledek nedokládá připojení k fyzické kameře.
+- **OPEN (cílené automatické testy)** – test účtu i test `tests/e2e/test_ha_direct_ha_stream.py` byly zkuseny v připraveném nativním Python 3.14 prostředí. Oba běhy uvázly při vytváření Windows asyncio event loop (traceback ukázal blokující socket `accept` při tvorbě self-pipe); žádný z nich proto nemá doložený výsledek PASS. V systémovém Pythonu testy nelze importovat kvůli chybějícím závislostem HA/aiohttp.
+- **PASS (fyzická C201 v testovacím HA na Windows)** – po schválení účtu dekódoval FFmpeg z přímé entity 98 snímků za pět sekund videa. První snímek samostatné zkoušky se čtyřmi entitami přišel za 6,9 s.
+- **PASS (inventář fyzického účtu)** – HA načetl čtyři kamery a pro každou vybral adresu na LAN. Všechny jsou na panelu **Xiaomi přímo**. Při prvním společném testu C400, Mi 360 a AW300 nedoručily dekódovaný snímek do 45 s. Samostatná sonda u C400 a AW300 obešla HLS a došla k čekání na první médium, u Mi 360 vypršel čas navázání CS2.
+- **Rozběh a opakované otevření** – integrace sdílí autorizovanou HTTP relaci účtu, zkracuje analýzu lokálního MPEG-TS a při ukončení posílá příkaz k zastavení videa. C400 a AW300 mají nejvýše jeden rychlý pokus navíc před předáním chyby HA. V nativním HA na Windows se v prohlížeči přehrávaly C201 a C400, C400 při šířce 2560 px. Při opětovném otevření už rozehraného panelu se obraz zobrazil za 1,2 s a 2,4 s. Časy neplatí jako měření startu relace od nuly. Při samostatné přímé sondě bez přehrávače HA přišlo první médium C201 za 1,21 s a C400 za 4,85 s. AW300 po navázání relace neposlala video ve stejném měření ani přes Go referenci. Mi 360 neodpověděla na navázání CS2 ani na místní vyhledání podle MAC.
+- **C201 v prohlížeči** – při hlášeném rozpadu obrazu trasa C201 nově převádí video na H.264, drží rozlišení z prvního platného snímku a používá rostoucí časové značky. Cílený offline test podstrčí změnu velikosti snímku a návrat časové značky. Na skutečné C201 FFmpeg přes HA dekódoval 402 snímků za 20 s v rozlišení 848 × 480 bez chyb dekódování a bez návratu časových značek při milisekundové časové základně. V prohlížeči postupovala časová osa videa C201. Dlouhodobý běh a opakovatelnost závady nejsou ověřeny.
+- **Přímé PTZ a AW300** – panel **Xiaomi přímo** zobrazuje čtyři šipky v obrazu každé otočné kamery. V izolovaném HA kliknutí předalo právě jeden povel doleva; test drátu ověřil šifrovaný MISS příkaz. Ve fyzickém HA skončil jeden přesně zacílený požadavek na C201 HTTP 200 za 2 ms. Čas potvrzuje přijetí službou HA, fyzický pohyb nebyl nezávisle měřen. AW300 v cílených sondách navázala relaci přes TCP i UDP a po odeslání startu nedodala mediální data při zapnutém ani vypnutém zvuku.
+- **Panel WebRTC Camera** – testovací HA používá [AlexxIT WebRTC Camera v3.6.1](https://github.com/AlexxIT/WebRTC/releases/tag/v3.6.1) s již běžícím lokálním go2rtc. Čtyři karty používají přímé entity pomocí `entity`, režimy `webrtc,mse` a šipky přes `shortcuts` s akcí `button.press`. Sdílení zdroje odstranilo HTTP 409 při více odběratelích. Test ověřil, že dva HTTP přehrávače dostanou data z jediné relace a že se relace po odpojení uvolní. V prohlížeči běžela fyzická C201 přes RTC a C400 přes MSE. U AW300 a Mi 360 zůstává problém na straně přímého zdroje.
+- **Opakované ověření AW300** – uživatel potvrdil, že AW300 běží a Mi 360 je fyzicky odpojená. V testovacím HA se při kontrole přehrávaly C201 a C400, karta AW300 vrátila HTTP 503. Sonda mimo HA a go2rtc navázala relaci AW300 s kvalitou `3` i s automatickou kvalitou `0`. U obou po příkazu ke spuštění uplynulo 13 s bez prvních mediálních dat. Mi 360 se při této sondě netestovala.
+- **Xiaomi Camera Direct 0.2.0 v nativním HA 2026.10.4** – aktualizace zachovala ID položky i původní autorizaci. Živý registr HA obsahuje čtyři zařízení, čtyři původní entity kamer a 12 tlačítek přiřazených ke kamerám. Přímo z entity C201 uložil HA JPEG (51 678 bajtů) a MP4 (21,99 s). FFmpeg dekódoval první dvě sekundy MP4 s návratovým kódem 0. Z přímé entity C400 dekódoval 99 snímků za 5 s videa, celý pokus trval 12 s. Ve zkušebním HA se simulátorem prošla obnova přihlášení pro stejný účet, odmítnutí jiného účtu a změna výběru kamer se zachováním ID. Prošlo 27 rychlých testů a pět mediálních a HA E2E testů. Po simulovaném pádu spojení dostali dva aktivní odběratelé klíčový snímek z jedné nové relace s rostoucí časovou značkou. Obnova po fyzickém výpadku zbývá ověřit.
+- **Kontrola finálního nasazení 0.2.0** – po restartu testovacího HA prošel přímý HLS obou fyzických kamer. FFmpeg dekódoval z C201 104 snímků a z C400 99 snímků, vždy za pět sekund videa. Celé zkoušky trvaly 7 s a 23 s včetně dekódování. Během startu C400 zaznamenal HA jednu chybu demuxu. Jednotlivý úspěšný výsledek nedokládá splnění cíle pro studené starty.
 
 ### Živá referenční sestava na nativních Windows
 

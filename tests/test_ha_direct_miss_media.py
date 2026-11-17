@@ -1,7 +1,7 @@
 import struct
 import unittest
 
-from xiaomi_direct.miss_media import MediaFormatError, decode_video_frame, parse_video_frame
+from custom_components.xiaomi_direct_pilot.xiaomi_direct.miss_media import MediaFormatError, decode_video_frame, parse_video_frame
 
 
 def media_header(codec_id):
