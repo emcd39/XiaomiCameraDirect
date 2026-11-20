@@ -8,12 +8,11 @@ import socket
 import subprocess
 import sys
 
-from aiohttp import ClientSession, DummyCookieJar
 from homeassistant.components.network import async_get_adapters
 from homeassistant.helpers.device_registry import DeviceInfo
 
-from .const import C400_MODEL, DOMAIN
-from .xiaomi_direct.account import XiaomiAccount
+from .const import C400_MODEL, C701_MODEL, DOMAIN
+from .xiaomi_direct.account import XiaomiAccount, create_client_session
 from .xiaomi_direct.cs2_tcp import CS2Error, validate_lan
 
 
@@ -22,6 +21,7 @@ QUALITY = {
     C400_MODEL: 3,
     "chuangmi.camera.026c02": 2,
     "mxiang.camera.mod13": 0,
+    C701_MODEL: 0,
 }
 _NEIGHBOR = re.compile(r"\b((?:\d{1,3}\.){3}\d{1,3})\b.*?\b((?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2})\b", re.I)
 
@@ -110,8 +110,17 @@ def account_cameras(reply):
     return cameras
 
 
+def merge_refreshed_camera(camera, saved):
+    """Merge inventory metadata without carrying forward an unverified route."""
+    current = {**(saved or {}), **camera}
+    for key in ("camera_ip", "source_ip", "camera_lan"):
+        if key not in camera:
+            current.pop(key, None)
+    return current
+
+
 async def load_account_cameras(config):
-    async with ClientSession(cookie_jar=DummyCookieJar()) as client:
+    async with create_client_session() as client:
         account = XiaomiAccount(
             client, region=config["region"],
             user_id=config["account_user_id"], pass_token=config["account_pass_token"],

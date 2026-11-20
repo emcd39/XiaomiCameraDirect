@@ -15,6 +15,7 @@ _LAN_SEARCH = b"\xf1\x30\x00\x00"
 _LAN_PORT = 32108
 _PRIVATE = tuple(IPv4Network(network) for network in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
 _LIMITS = {0: 64 * 1024, 2: 4 * 1024 * 1024}
+_SPEAKER_CHANNEL = 3
 
 
 class CS2Error(Exception):
@@ -87,6 +88,8 @@ class TCPTransport:
         self._pending = deque()
         self._buffers = {channel: bytearray() for channel in _LIMITS}
         self._sequence = 0
+        self._data_sequence = {_SPEAKER_CHANNEL: 0}
+        self._write_lock = asyncio.Lock()
         self._keepalive = asyncio.create_task(self._ping_periodically())
 
     @classmethod
@@ -120,8 +123,9 @@ class TCPTransport:
             self._writer.transport.abort()
 
     async def _write(self, packet):
-        self._writer.write(_WRAPPER.pack(len(packet), 0x68) + packet)
-        await self._writer.drain()
+        async with self._write_lock:
+            self._writer.write(_WRAPPER.pack(len(packet), 0x68) + packet)
+            await self._writer.drain()
 
     async def _ping_periodically(self):
         try:
@@ -138,6 +142,17 @@ class TCPTransport:
         packet = _frame(0xD0, _DATA.pack(0xD1, 0, self._sequence) + _SIZE.pack(len(message)) + message)
         self._sequence = (self._sequence + 1) & 0xFFFF
         await self._write(packet)
+
+    async def send_channel(self, channel: int, payload: bytes):
+        """Write unacknowledged audio to the MISS speaker backchannel."""
+        if channel != _SPEAKER_CHANNEL:
+            raise CS2Error("only the MISS speaker channel can be written as media")
+        if not payload or len(payload) > 65535 - 12:
+            raise CS2Error("MISS speaker packet has an invalid size")
+        sequence = self._data_sequence[channel]
+        body = _DATA.pack(0xD1, channel, sequence) + _SIZE.pack(len(payload)) + payload
+        self._data_sequence[channel] = (sequence + 1) & 0xFFFF
+        await self._write(_frame(0xD0, body))
 
     def _accept_data(self, body):
         if len(body) < _DATA.size:

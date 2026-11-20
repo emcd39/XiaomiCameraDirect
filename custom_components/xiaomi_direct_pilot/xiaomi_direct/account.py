@@ -9,7 +9,15 @@ import secrets
 import struct
 import time
 
-from aiohttp import ClientError, ClientResponseError, ClientTimeout
+from aiohttp import (
+    ClientError,
+    ClientResponseError,
+    ClientSession,
+    ClientTimeout,
+    DummyCookieJar,
+    TCPConnector,
+)
+from aiohttp.resolver import ThreadedResolver
 from cryptography.hazmat.decrepit.ciphers.algorithms import ARC4
 from cryptography.hazmat.primitives.ciphers import Cipher
 from yarl import URL
@@ -21,6 +29,18 @@ _REGIONS = frozenset(("cn", "de", "i2", "ru", "sg", "us"))
 _REQUEST = "/v2/device/miss_get_vendor"
 _DEVICE_LIST = "/v2/home/device_list_page"
 _MAX_RESPONSE = 128 * 1024
+
+
+def create_client_session():
+    """Create an account client that uses the operating system DNS resolver.
+
+    aiohttp's optional c-ares resolver can fail to resolve Xiaomi account
+    hosts on Windows Home Assistant installs even when Windows DNS works.
+    """
+    return ClientSession(
+        cookie_jar=DummyCookieJar(),
+        connector=TCPConnector(resolver=ThreadedResolver()),
+    )
 
 
 class AccountError(Exception):
@@ -362,8 +382,8 @@ class XiaomiAccount:
                     raise AccountError("Xiaomi rejected the signed session request")
                 body = await _body(response)
             reply = json.loads(_rc4(key, base64.b64decode(body, validate=True)))
-        except (ClientError, TimeoutError, ValueError, TypeError, AttributeError):
-            raise AccountError("Xiaomi account request failed") from None
+        except (ClientError, TimeoutError, ValueError, TypeError, AttributeError) as error:
+            raise AccountError(f"Xiaomi account request failed ({type(error).__name__})") from None
         if not isinstance(reply, dict) or reply.get("code") != 0 or not isinstance(reply.get("result"), dict):
             raise AccountError("Xiaomi account request was rejected")
         return reply["result"]

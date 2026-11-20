@@ -2,16 +2,15 @@
 
 import logging
 
-from aiohttp import ClientSession, DummyCookieJar
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigFlow, OptionsFlowWithReload
 from homeassistant.core import callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.selector import TextSelector, TextSelectorConfig, TextSelectorType
 import voluptuous as vol
 
-from .const import C400_LOW_RESOLUTION, C400_MODEL, DOMAIN, NAME
+from .const import C201_AUDIO, C201_MODEL, C400_LOW_RESOLUTION, C400_MODEL, C701_AUDIO, C701_MODEL, DOMAIN, NAME
 from .inventory import account_cameras, resolve_cameras
-from .xiaomi_direct.account import AccountChallenge, AccountError, XiaomiAccount
+from .xiaomi_direct.account import AccountChallenge, AccountError, XiaomiAccount, create_client_session
 
 
 _REGIONS = ("de", "cn", "i2", "ru", "sg", "us")
@@ -71,7 +70,7 @@ class DirectCameraConfigFlow(ConfigFlow, domain=DOMAIN):
             if self.source != SOURCE_REAUTH:
                 self._region = user_input["region"]
             try:
-                async with ClientSession(cookie_jar=DummyCookieJar()) as client:
+                async with create_client_session() as client:
                     if user_input["method"] == "qr":
                         self._approval = await XiaomiAccount.start_qr(client)
                         return await self.async_step_qr()
@@ -97,7 +96,7 @@ class DirectCameraConfigFlow(ConfigFlow, domain=DOMAIN):
         errors = {}
         if user_input is not None:
             try:
-                async with ClientSession(cookie_jar=DummyCookieJar()) as client:
+                async with create_client_session() as client:
                     account = await XiaomiAccount.finish_qr(client, self._approval, self._region)
                     result = await self._use_account(account)
                     self._approval = None
@@ -118,7 +117,7 @@ class DirectCameraConfigFlow(ConfigFlow, domain=DOMAIN):
         errors = {}
         if user_input is not None:
             try:
-                async with ClientSession(cookie_jar=DummyCookieJar()) as client:
+                async with create_client_session() as client:
                     account = await self._verify_xiaomi(client, user_input["code"].strip())
                     result = await self._use_account(account)
                     self._verify_xiaomi = None
@@ -142,6 +141,14 @@ class DirectCameraOptionsFlow(OptionsFlowWithReload):
         selected = [key for key in options.get("camera_ids", choices) if key in choices]
         fields = {vol.Required("camera_ids", default=selected): cv.multi_select(choices)}
         if self.config_entry.data["region"] == "de":
+            c201s = {item["device_id"]: item["name"] for item in cameras if item["model"] == C201_MODEL}
+            if c201s:
+                audio = [key for key in options.get(C201_AUDIO, ()) if key in c201s]
+                fields[vol.Optional(C201_AUDIO, default=audio)] = cv.multi_select(c201s)
+            c701s = {item["device_id"]: item["name"] for item in cameras if item["model"] == C701_MODEL}
+            if c701s:
+                audio = [key for key in options.get(C701_AUDIO, ()) if key in c701s]
+                fields[vol.Optional(C701_AUDIO, default=audio)] = cv.multi_select(c701s)
             c400s = {item["device_id"]: item["name"] for item in cameras if item["model"] == C400_MODEL}
             if c400s:
                 reduced = [key for key in options.get(C400_LOW_RESOLUTION, ()) if key in c400s]

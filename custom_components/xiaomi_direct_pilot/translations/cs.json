@@ -53,9 +53,11 @@
     "step": {
       "init": {
         "title": "Kamery v Home Assistantu",
-        "description": "Vyber kamery, které chceš v Home Assistantu používat.",
+        "description": "Vyber kamery, které chceš v Home Assistantu používat. Experimentální mikrofony C201 a C701 přidají zvuk do přehrávání a záznamů. C701 také povolí tlačítko hovoru při podržení.",
         "data": {
           "camera_ids": "Kamery",
+          "c201_audio": "Mikrofon C201 (experimentální)",
+          "c701_audio": "Mikrofon a hovor C701 (experimentální)",
           "c400_low_resolution": "Kamery C400 s nižším rozlišením"
         }
       }

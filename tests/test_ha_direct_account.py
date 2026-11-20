@@ -6,6 +6,7 @@ import json
 from types import SimpleNamespace
 import unittest
 
+from aiohttp.resolver import ThreadedResolver
 from yarl import URL
 
 from custom_components.xiaomi_direct_pilot.xiaomi_direct import account
@@ -33,6 +34,13 @@ class Response:
 
 
 class AccountTest(unittest.IsolatedAsyncioTestCase):
+    async def test_account_client_uses_system_dns_resolver(self):
+        client = account.create_client_session()
+        try:
+            self.assertIsInstance(client.connector._resolver, ThreadedResolver)
+        finally:
+            await client.close()
+
     async def test_qr_approval_uses_xiaomi_hosts_and_creates_account(self):
         security = base64.b64encode(b"mock-security").decode()
         test = self

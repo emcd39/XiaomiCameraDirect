@@ -1,11 +1,11 @@
-"""Parse video access units delivered by the Xiaomi MISS media channel.
+"""Parse access units delivered by the Xiaomi MISS media channel.
 
 Header fields follow the MIT-licensed Go reference in
 internal/xiaomi/protocol/miss/client.go. The transport supplies the header
 and the nonce-prefixed ciphertext separately.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 from struct import Struct
 from typing import Literal
@@ -16,6 +16,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
 _FIELDS = Struct("<4xIIIQ")
 _HEADER_SIZE = 32
 _START_CODE = re.compile(rb"\x00\x00\x00?\x01")
+AUDIO_CODECS = {1026: "pcmu", 1027: "pcma", 1032: "opus"}
 
 
 class MediaFormatError(ValueError):
@@ -32,8 +33,15 @@ class VideoFrame:
     random_access: bool
 
 
-def decode_video_frame(header: bytes, encrypted: bytes, session_key: bytes) -> VideoFrame:
-    """Decrypt a MISS video packet with the already negotiated session key."""
+@dataclass(frozen=True, slots=True)
+class AudioPacket:
+    codec: str
+    sample_rate: int
+    timestamp: int
+    payload: bytes = field(repr=False)
+
+
+def _decrypt(encrypted: bytes, session_key: bytes) -> bytes:
     if len(session_key) != 32:
         raise MediaFormatError("invalid MISS media session key size")
     if len(encrypted) <= 8:
@@ -44,7 +52,24 @@ def decode_video_frame(header: bytes, encrypted: bytes, session_key: bytes) -> V
     # a zero 64-bit counter followed by the eight wire nonce bytes.
     nonce = bytes(8) + encrypted[:8]
     decryptor = Cipher(algorithms.ChaCha20(session_key, nonce), mode=None).decryptor()
-    return parse_video_frame(header, decryptor.update(encrypted[8:]) + decryptor.finalize())
+    return decryptor.update(encrypted[8:]) + decryptor.finalize()
+
+
+def decode_video_frame(header: bytes, encrypted: bytes, session_key: bytes) -> VideoFrame:
+    """Decrypt a MISS video packet with the already negotiated session key."""
+    return parse_video_frame(header, _decrypt(encrypted, session_key))
+
+
+def decode_audio_packet(header: bytes, encrypted: bytes, session_key: bytes) -> AudioPacket:
+    """Decode the audio codec, rate flag and timestamp from the MISS header."""
+    if len(header) != _HEADER_SIZE:
+        raise MediaFormatError("invalid MISS media header size")
+    codec_id, _, flags, timestamp = _FIELDS.unpack_from(header)
+    if codec_id not in AUDIO_CODECS:
+        raise MediaFormatError("unsupported MISS audio codec")
+    codec = AUDIO_CODECS[codec_id]
+    rate = 48000 if codec == "opus" else (16000 if (flags >> 3) & 0xF else 8000)
+    return AudioPacket(codec, rate, timestamp, _decrypt(encrypted, session_key))
 
 
 def parse_video_frame(header: bytes, payload: bytes) -> VideoFrame:

@@ -2,13 +2,16 @@
 
 import logging
 from dataclasses import dataclass
-from aiohttp import ClientSession, DummyCookieJar
+from pathlib import Path
+from aiohttp import ClientSession
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP, Platform
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from .button import PTZ_MODELS, PTZControl
 from .const import DOMAIN, NAME
-from .inventory import account_cameras, create_account, resolve_cameras
-from .xiaomi_direct.account import AccountAuthorizationError, AccountError
+from .inventory import account_cameras, create_account, merge_refreshed_camera, resolve_cameras
+from .xiaomi_direct.account import AccountAuthorizationError, AccountError, create_client_session
+from .xiaomi_direct.talkback_api import async_stop_talkback_for_sources, register_talkback_commands
 
 
 PLATFORMS = [Platform.CAMERA, Platform.BUTTON]
@@ -21,6 +24,36 @@ class DirectRuntime:
     account: object
     cameras: list[dict]
     ptz: dict[str, PTZControl]
+    media_sources: dict[str, object]
+
+
+async def async_setup(hass, config):
+    """Register the small push-to-talk card and authenticated WS commands."""
+    data = hass.data.setdefault(DOMAIN, {})
+    data.setdefault("talkback_media", {})
+    data.setdefault("talkback_sessions", {})
+    register_talkback_commands(hass)
+
+    card_path = Path(__file__).parent / "www" / "xiaomi-direct-camera.js"
+    await hass.http.async_register_static_paths([
+        StaticPathConfig("/xiaomi-direct/xiaomi-direct-camera.js", str(card_path), True)
+    ])
+    resources = hass.data["lovelace"].resources
+    await resources.async_get_info()
+    resource_url = "/xiaomi-direct/xiaomi-direct-camera.js"
+    integration = hass.data.get("integrations", {}).get(DOMAIN)
+    version = getattr(integration, "version", "0.3.0")
+    versioned_url = f"{resource_url}?v={version}"
+    for resource in resources.async_items():
+        if resource.get("url", "").startswith(resource_url):
+            if resource["url"] != versioned_url:
+                await resources.async_update_item(
+                    resource["id"], {"res_type": "module", "url": versioned_url},
+                )
+            break
+    else:
+        await resources.async_create_item({"res_type": "module", "url": versioned_url})
+    return True
 
 
 async def async_migrate_entry(hass, entry):
@@ -45,7 +78,7 @@ async def async_migrate_entry(hass, entry):
 
 
 async def async_setup_entry(hass, entry):
-    client = ClientSession(cookie_jar=DummyCookieJar())
+    client = create_client_session()
     account = create_account(client, entry.data)
     saved = {item["device_id"]: item for item in entry.data["cameras"]}
     try:
@@ -59,10 +92,8 @@ async def async_setup_entry(hass, entry):
             if inventory:
                 refreshed = {}
                 for item in await resolve_cameras(hass, inventory):
-                    known = saved.get(item["device_id"])
-                    if known and "source_ip" not in item:
-                        item = {**item, **{key: known[key] for key in ("camera_ip", "source_ip", "camera_lan") if key in known}}
-                    refreshed[item["device_id"]] = item
+                    device_id = item["device_id"]
+                    refreshed[device_id] = merge_refreshed_camera(item, saved.get(device_id))
                 saved = refreshed
                 data = {**entry.data, "cameras": list(saved.values())}
                 if data != entry.data:
@@ -74,7 +105,7 @@ async def async_setup_entry(hass, entry):
             for device_id, item in saved.items()
             if item["model"] in PTZ_MODELS and "source_ip" in item
         }
-        entry.runtime_data = DirectRuntime(client, account, list(saved.values()), ptz)
+        entry.runtime_data = DirectRuntime(client, account, list(saved.values()), ptz, {})
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     except BaseException:
         await client.close()
@@ -90,5 +121,10 @@ async def async_setup_entry(hass, entry):
 async def async_unload_entry(hass, entry):
     if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         return False
+    media_sources = hass.data.get(DOMAIN, {}).get("talkback_media", {})
+    await async_stop_talkback_for_sources(hass, entry.runtime_data.media_sources.values())
+    for unique_id, source in entry.runtime_data.media_sources.items():
+        media_sources.pop(unique_id, None)
+        await source.close()
     await entry.runtime_data.client.close()
     return True

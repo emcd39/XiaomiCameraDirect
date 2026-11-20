@@ -6,12 +6,13 @@ import json
 import socket
 import struct
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
 from nacl.bindings import crypto_box_beforenm, crypto_scalarmult_base
 
 from custom_components.xiaomi_direct_pilot.xiaomi_direct import c201_session, cs2_tcp
+from custom_components.xiaomi_direct_pilot.xiaomi_direct.miss_media import AudioPacket
 
 
 def wrapper(packet):
@@ -38,6 +39,29 @@ def crypt(key, nonce, payload):
 
 
 class C201SessionTest(unittest.IsolatedAsyncioTestCase):
+    async def test_audio_packets_require_opt_in_and_invalid_audio_preserves_video(self):
+        key = bytes(range(32))
+        nonce = b"12345678"
+        alaw = b"\x45" * 320
+        valid_audio = struct.pack("<4xIIIQ8x", 1027, 10, 8, 1000) + nonce + crypt(key, nonce, alaw)
+        opus = b"mock opus payload"
+        opus_audio = struct.pack("<4xIIIQ8x", 1032, 11, 24, 1040) + nonce + crypt(key, nonce, opus)
+        broken_audio = struct.pack("<4xIIIQ8x", 1027, 10, 8, 1000) + nonce
+        picture = bytes.fromhex("000000012601aa")
+        video_packet = struct.pack("<4xIIIQ8x", 5, 11, 0, 1000) + nonce + crypt(key, nonce, picture)
+
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                transport = AsyncMock()
+                transport.receive.side_effect = [(2, broken_audio), (2, valid_audio), (2, opus_audio), (2, video_packet)]
+                video = c201_session.C201Video(transport, key, audio=enabled)
+                frame = await video.read_media()
+                if enabled:
+                    self.assertEqual(frame, AudioPacket("pcma", 16000, 1000, alaw))
+                    self.assertEqual(await video.read_media(), AudioPacket("opus", 48000, 1040, opus))
+                    frame = await video.read_media()
+                self.assertEqual(frame.payload, picture)
+
     async def test_account_signs_fresh_ephemeral_keys(self):
         requested = []
         camera_key = crypto_scalarmult_base(bytes(range(32, 64)))
@@ -112,7 +136,8 @@ class C201SessionTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(start[12:16], bytes.fromhex("00001001"))
                 command = crypt(key, start[16:24], start[24:])
                 self.assertEqual(command[:4], b"\x00\x00\x01\x02")
-                self.assertEqual(json.loads(command[4:]), {"videoquality": qualities[len(opens)], "enableaudio": 0})
+                quality = qualities[len(opens)]
+                self.assertEqual(json.loads(command[4:]), {"videoquality": quality, "enableaudio": int(quality == 0)})
                 encrypted = nonce + crypt(key, nonce, frame)
                 media = message(struct.pack("<4xIIIQ8x", 5, 7, 0, 1000) + encrypted)
                 writer.write(wrapper(bytes.fromhex("f1e00000")) + data(2, media[:3]) + data(2, media[3:]))
@@ -138,13 +163,65 @@ class C201SessionTest(unittest.IsolatedAsyncioTestCase):
         async with server, asyncio.timeout(5):
             with patch.object(c201_session, "open_transport", new=connect):
                 for quality in qualities:
-                    async with c201_session.open_video(None, None, None, credentials, quality=quality) as video:
+                    async with c201_session.open_video(
+                        None, None, None, credentials, quality=quality, audio=quality == 0,
+                    ) as video:
                         received = await video.read(timeout=1)
                         self.assertEqual((received.codec, received.sequence, received.payload), ("h265", 7, frame))
                         self.assertTrue(received.random_access)
                         await video.step(1)
                     await (await handlers.get())
         self.assertEqual(len(opens), len(qualities))
+
+    async def test_opus_talkback_uses_encrypted_speaker_channel_and_stops(self):
+        client_secret = bytes(range(32))
+        camera_secret = bytes(range(32, 64))
+        credentials = c201_session.SignedSession(client_secret, crypto_scalarmult_base(camera_secret), "mock-sign")
+        key = crypto_box_beforenm(crypto_scalarmult_base(client_secret), camera_secret)
+        packets = []
+
+        async def camera(reader, writer):
+            try:
+                await read_packet(reader)
+                writer.write(data(0, message(b'\x00\x00\x01\x01{"result":"success"}')))
+                await writer.drain()
+                start = await read_packet(reader)
+                self.assertEqual(crypt(key, start[16:24], start[24:])[:4], b"\x00\x00\x01\x02")
+                speaker_start = await read_packet(reader)
+                self.assertEqual(crypt(key, speaker_start[16:24], speaker_start[24:]), b"\x00\x00\x01\x06")
+                speaker = await read_packet(reader)
+                self.assertEqual((speaker[:2], speaker[5]), (b"\xf1\xd0", 3))
+                size, = struct.unpack_from(">I", speaker, 8)
+                self.assertEqual(size, len(speaker) - 12)
+                encrypted_size, codec, sequence, flags, timestamp = struct.unpack_from("<IIIIQ", speaker, 12)
+                self.assertEqual(codec, 1032)
+                self.assertEqual((sequence, flags), (0, 0))
+                self.assertGreater(timestamp, 0)
+                encrypted = speaker[44:]
+                self.assertEqual(encrypted_size, len(encrypted))
+                self.assertEqual(crypt(key, encrypted[:8], encrypted[8:]), b"\xf8\xff\xfe")
+                speaker_stop = await read_packet(reader)
+                self.assertEqual(crypt(key, speaker_stop[16:24], speaker_stop[24:]), b"\x00\x00\x01\x08")
+                video_stop = await read_packet(reader)
+                self.assertEqual(crypt(key, video_stop[16:24], video_stop[24:]), b"\x00\x00\x01\x03")
+                packets.append(1)
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        server = await asyncio.start_server(camera, "127.0.0.1", 0)
+
+        async def connect(*args, **kwargs):
+            return cs2_tcp.TCPTransport(*await asyncio.open_connection(*server.sockets[0].getsockname()))
+
+        with patch.object(c201_session, "open_transport", new=connect):
+            async with server, asyncio.timeout(4):
+                with patch.object(c201_session, "_SPEAKER_START_DELAY", 0):
+                    async with c201_session.open_video(None, None, None, credentials, quality=0, audio=True) as video:
+                        await video.start_speaker()
+                        await video.write_speaker_audio(b"\xf8\xff\xfe")
+                        await video.stop_speaker()
+        self.assertEqual(packets, [1])
 
     async def test_discovery_rejects_non_lan_target(self):
         with self.assertRaisesRegex(cs2_tcp.CS2Error, "selected private LAN"):

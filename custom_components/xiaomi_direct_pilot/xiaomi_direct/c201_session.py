@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import json
 import secrets
 from struct import Struct
+import time
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
 from nacl.bindings import crypto_box_beforenm, crypto_scalarmult_base
@@ -14,11 +15,17 @@ from nacl.exceptions import CryptoError
 from nacl.public import PrivateKey
 
 from .cs2_tcp import CS2Error, open_transport
-from .miss_media import decode_video_frame
+from .miss_media import (
+    AUDIO_CODECS, AudioPacket, MediaFormatError, VideoFrame, decode_audio_packet, decode_video_frame,
+)
 
 
 _COMMAND = Struct(">I")
 _CODEC = Struct("<4xI")
+_SPEAKER_HEADER = Struct("<IIIIQ8x")
+_SPEAKER_CODEC_OPUS = 1032
+_SPEAKER_CHANNEL = 3
+_SPEAKER_START_DELAY = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,9 +102,13 @@ async def _start(transport, credentials, quality, audio):
 
 
 class C201Video:
-    def __init__(self, transport, key):
+    """Authenticated MISS media session, including optional audio/backchannel."""
+
+    def __init__(self, transport, key, *, audio=False):
         self._transport = transport
         self._key = key
+        self._audio = audio
+        self._speaker_started = False
 
     async def step(self, operation):
         if operation not in (1, 2, 3, 4):
@@ -105,7 +116,44 @@ class C201Video:
         command = _COMMAND.pack(0x112) + json.dumps({"operation": operation}, separators=(",", ":")).encode()
         await self._transport.send_command(0x1001, _encrypt(command, self._key))
 
-    async def read(self, *, timeout=15):
+    async def start_speaker(self):
+        if not self._audio:
+            raise CS2Error("C701 talkback requires microphone audio to be enabled")
+        if self._speaker_started:
+            return
+        await self._transport.send_command(0x1001, _encrypt(_COMMAND.pack(0x106), self._key))
+        self._speaker_started = True
+        try:
+            await asyncio.sleep(_SPEAKER_START_DELAY)
+        except asyncio.CancelledError:
+            with suppress(CS2Error, OSError, TimeoutError):
+                await self.stop_speaker()
+            raise
+
+    async def write_speaker_audio(self, payload: bytes):
+        if not self._speaker_started:
+            raise CS2Error("C701 talkback is not active")
+        if not isinstance(payload, bytes) or not 0 < len(payload) <= 4096:
+            raise CS2Error("invalid C701 Opus packet")
+        encrypted = _encrypt(payload, self._key)
+        header = _SPEAKER_HEADER.pack(
+            len(encrypted), _SPEAKER_CODEC_OPUS, 0, 0, int(time.time() * 1000),
+        )
+        await self._transport.send_channel(_SPEAKER_CHANNEL, header + encrypted)
+
+    async def stop_speaker(self):
+        if not self._speaker_started:
+            return
+        self._speaker_started = False
+        await self._transport.send_command(0x1001, _encrypt(_COMMAND.pack(0x108), self._key))
+
+    async def read(self, *, timeout=15) -> VideoFrame:
+        return await self._read(timeout, audio=False)
+
+    async def read_media(self, *, timeout=15) -> VideoFrame | AudioPacket:
+        return await self._read(timeout, audio=self._audio)
+
+    async def _read(self, timeout, *, audio):
         async with asyncio.timeout(timeout):
             while True:
                 channel, message = await self._transport.receive()
@@ -116,6 +164,9 @@ class C201Video:
                 codec, = _CODEC.unpack_from(message)
                 if codec in (4, 5):
                     return decode_video_frame(message[:32], message[32:], self._key)
+                if audio and codec in AUDIO_CODECS:
+                    with suppress(MediaFormatError):
+                        return decode_audio_packet(message[:32], message[32:], self._key)
 
 
 @asynccontextmanager
@@ -125,9 +176,13 @@ async def open_video(camera, source, lan, credentials, *, timeout=15, quality=0,
     async with transport:
         async with asyncio.timeout(timeout):
             key = await _start(transport, credentials, quality, audio)
+        video = C201Video(transport, key, audio=audio)
         try:
-            yield C201Video(transport, key)
+            yield video
         finally:
+            with suppress(CS2Error, OSError, TimeoutError):
+                async with asyncio.timeout(0.5):
+                    await video.stop_speaker()
             with suppress(CS2Error, OSError, TimeoutError):
                 async with asyncio.timeout(0.5):
                     await transport.send_command(0x1001, _encrypt(_COMMAND.pack(0x103), key))
