@@ -1,0 +1,218 @@
+{
+  "title": "Xiaomi přímo",
+  "views": [
+    {
+      "title": "Kamery",
+      "path": "kamery",
+      "panel": true,
+      "cards": [
+        {
+          "type": "grid",
+          "columns": 2,
+          "square": false,
+          "cards": [
+            {
+              "type": "custom:xiaomi-direct-camera",
+              "entity": "camera.xiaomi_c701_direct",
+              "title": "Xiaomi C701 Direct",
+              "mode": "mse",
+              "media": "video,audio",
+              "muted": true,
+              "ui": true,
+              "background": false,
+              "intersection": 0.05,
+              "style": "video {aspect-ratio: 16/9; object-fit: contain} .shortcuts {left: unset; right: 8px; top: 32px}",
+              "shortcuts": [
+                {
+                  "name": "Vlevo",
+                  "icon": "mdi:arrow-left",
+                  "service": "button.press",
+                  "service_data": {
+                    "entity_id": "button.xiaomi_c701_direct_ptz_left"
+                  }
+                },
+                {
+                  "name": "Vpravo",
+                  "icon": "mdi:arrow-right",
+                  "service": "button.press",
+                  "service_data": {
+                    "entity_id": "button.xiaomi_c701_direct_ptz_right"
+                  }
+                },
+                {
+                  "name": "Nahoru",
+                  "icon": "mdi:arrow-up",
+                  "service": "button.press",
+                  "service_data": {
+                    "entity_id": "button.xiaomi_c701_direct_ptz_up"
+                  }
+                },
+                {
+                  "name": "Dolů",
+                  "icon": "mdi:arrow-down",
+                  "service": "button.press",
+                  "service_data": {
+                    "entity_id": "button.xiaomi_c701_direct_ptz_down"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "custom:webrtc-camera",
+              "entity": "camera.mi_360deg_camera_1080p_direct",
+              "title": "Mi 360° Camera (1080p) Direct",
+              "mode": "webrtc,mse",
+              "media": "video",
+              "muted": true,
+              "ui": true,
+              "background": false,
+              "intersection": 0.05,
+              "style": "video {aspect-ratio: 16/9; object-fit: contain} .shortcuts {left: unset; right: 8px; top: 32px}",
+              "shortcuts": [
+                {
+                  "name": "Vlevo",
+                  "icon": "mdi:arrow-left",
+                  "service": "button.press",
+                  "service_data": {
+                    "entity_id": "button.mi_360deg_camera_1080p_direct_ptz_left"
+                  }
+                },
+                {
+                  "name": "Vpravo",
+                  "icon": "mdi:arrow-right",
+                  "service": "button.press",
+                  "service_data": {
+                    "entity_id": "button.mi_360deg_camera_1080p_direct_ptz_right"
+                  }
+                },
+                {
+                  "name": "Nahoru",
+                  "icon": "mdi:arrow-up",
+                  "service": "button.press",
+                  "service_data": {
+                    "entity_id": "button.mi_360deg_camera_1080p_direct_ptz_up"
+                  }
+                },
+                {
+                  "name": "Dolů",
+                  "icon": "mdi:arrow-down",
+                  "service": "button.press",
+                  "service_data": {
+                    "entity_id": "button.mi_360deg_camera_1080p_direct_ptz_down"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "custom:xiaomi-direct-camera",
+              "entity": "camera.outdoor_ulice_direct",
+              "title": "Outdoor ulice Direct",
+              "mode": "mse",
+              "media": "video,audio",
+              "muted": true,
+              "ui": true,
+              "background": false,
+              "intersection": 0.05,
+              "style": "video {aspect-ratio: 16/9; object-fit: contain} .shortcuts {left: unset; right: 8px; top: 32px}",
+              "push_to_talk": false
+            },
+            {
+              "type": "custom:xiaomi-direct-camera",
+              "entity": "camera.xiaomi_c201_direct",
+              "title": "Xiaomi C201 Direct",
+              "mode": "mse",
+              "media": "video,audio",
+              "muted": true,
+              "ui": true,
+              "background": false,
+              "intersection": 0.05,
+              "style": "video {aspect-ratio: 16/9; object-fit: contain} .shortcuts {left: unset; right: 8px; top: 32px}",
+              "shortcuts": [
+                {
+                  "name": "Vlevo",
+                  "icon": "mdi:arrow-left",
+                  "service": "button.press",
+                  "service_data": {
+                    "entity_id": "button.xiaomi_c201_direct_ptz_left"
+                  }
+                },
+                {
+                  "name": "Vpravo",
+                  "icon": "mdi:arrow-right",
+                  "service": "button.press",
+                  "service_data": {
+                    "entity_id": "button.xiaomi_c201_direct_ptz_right"
+                  }
+                },
+                {
+                  "name": "Nahoru",
+                  "icon": "mdi:arrow-up",
+                  "service": "button.press",
+                  "service_data": {
+                    "entity_id": "button.xiaomi_c201_direct_ptz_up"
+                  }
+                },
+                {
+                  "name": "Dolů",
+                  "icon": "mdi:arrow-down",
+                  "service": "button.press",
+                  "service_data": {
+                    "entity_id": "button.xiaomi_c201_direct_ptz_down"
+                  }
+                }
+              ],
+              "push_to_talk": false
+            },
+            {
+              "type": "custom:xiaomi-direct-camera",
+              "entity": "camera.xiaomi_smart_camera_c400_direct",
+              "title": "Xiaomi Smart Camera C400 Direct",
+              "mode": "mse",
+              "media": "video,audio",
+              "muted": true,
+              "ui": true,
+              "background": false,
+              "intersection": 0.05,
+              "style": "video {aspect-ratio: 16/9; object-fit: contain} .shortcuts {left: unset; right: 8px; top: 32px}",
+              "shortcuts": [
+                {
+                  "name": "Vlevo",
+                  "icon": "mdi:arrow-left",
+                  "service": "button.press",
+                  "service_data": {
+                    "entity_id": "button.xiaomi_smart_camera_c400_direct_ptz_left"
+                  }
+                },
+                {
+                  "name": "Vpravo",
+                  "icon": "mdi:arrow-right",
+                  "service": "button.press",
+                  "service_data": {
+                    "entity_id": "button.xiaomi_smart_camera_c400_direct_ptz_right"
+                  }
+                },
+                {
+                  "name": "Nahoru",
+                  "icon": "mdi:arrow-up",
+                  "service": "button.press",
+                  "service_data": {
+                    "entity_id": "button.xiaomi_smart_camera_c400_direct_ptz_up"
+                  }
+                },
+                {
+                  "name": "Dolů",
+                  "icon": "mdi:arrow-down",
+                  "service": "button.press",
+                  "service_data": {
+                    "entity_id": "button.xiaomi_smart_camera_c400_direct_ptz_down"
+                  }
+                }
+              ],
+              "push_to_talk": false
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

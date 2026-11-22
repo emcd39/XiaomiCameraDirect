@@ -4,9 +4,13 @@ Plán z 16. 11. 2026. Popisuje cílové řešení a podmínky vydání. Výsledk
 
 Přímá integrace se v Home Assistantu jmenuje **Xiaomi Camera Direct**. Stávající přímá položka používá původní interní doménu `xiaomi_direct_pilot`, aby se při přejmenování zachovaly entity a dashboard. Přechod z externího režimu `xiaomi_local_gateway` zůstává samostatným úkolem D2.
 
-Ve verzi 0.2.0 je v nativním testovacím HA ověřený obraz z C201 a C400 a JPEG i krátký MP4 z C201. Obnova autorizace, výběr kamer a sdílené obnovení přerušené relace mají regresní ověření se simulátorem. D1 čeká na fyzickou přejímku v HA OS. Pro dokončení D2 zbývá přechod z gateway a fyzická přejímka obnovy spojení a pohybu. V D3 chybí stabilní přímé video AW300 a opakovaná přejímka Mi 360 po jejím připojení. Export přímého zdroje pro Frigate patří do D4.
+Aktuální fyzický stav k 20. 11. 2026: uživatel potvrzuje přímý živý obraz na C201, C400, C701 a Mi 360; AW300 zůstává k pozdějšímu ověření. Fyzický pohyb PTZ je uživatelem ověřený na C201, C400 a C701. Starší síťové sondy a 503 v [záznamu přejímek](HA-DIRECT-PILOT.md) zachycují dřívější okamžiky a tento aktuální stav nepřebíjejí.
+
+HA integrace má QR autorizaci, výběr kamer, obnovu přihlášení, přímý stream, snímek, krátký záznam, směrové PTZ a společný kontrakt backendů. Simulované HA regrese pokrývají životní cyklus médií, přepnutí gateway/direct a ztrátu/obnovení trasy při změně IP se zachováním `entity_id` a obnovením streamu (pět testů, `OK`; log je v přehledu přejímek). Fyzicky jsou doložené JPEG a MP4 z C201 a oba rozlišené profily C400. C201 audio se podařilo dekódovat na testovací stanici, ale přehrání ve WebRTC/MSE kartě potvrzené není. C701 má nyní experimentální, opt-in příjem zvuku do HA a hovor z HA přes podržení tlačítka; nové regresní a fyzické ověření těchto cest zůstává otevřené. Fyzická obnova po výpadku a dlouhodobá stabilita zůstávají otevřené. D3 dál zahrnuje modelovou matici a stabilitu AW300; D4 je živé Frigate ověření a D5 další funkce a vydání.
 
 Verze 0.2.1 přidává z F03 volbu nižšího a plného rozlišení pro C400 v regionu DE. Obě rozlišení jsou ověřená na fyzické kameře přes přímou integraci a živou kartu testovacího HA. [Výsledky přejímky](HA-DIRECT-PILOT.md#volba-rozlišení-c400-f03)
+
+F02 nabízí volitelný poslech C201 v regionu DE. Od verze 0.2.3 se Opus i G.711 převádí na AAC v HA a sdílí s videem jednu kamerovou relaci. Přímá metadatová sonda na fyzické C201 potvrdila Opus. [Záznam zkoušek](HA-DIRECT-PILOT.md#zvuk-z-c201-f02)
 
 ## 1. Výsledek pro uživatele
 
@@ -30,7 +34,7 @@ flowchart LR
 
 ### Rozhraní a knihovna
 
-1. Zachovat doménu `xiaomi_local_gateway`, uživatelské entity, společnou kartu a vzory akcí. Zavést malé interní rozhraní pro inventář, schopnosti, otevření/zavření streamu, PTZ a další funkce až podle potřeby. Stávající `GatewayClient` zapojit jako adaptér pro externí režim. Oba backendy musí projít stejnými kontraktovými testy entit. Výběr backendu patří do nastavení integrace.
+1. Zachovat doménu `xiaomi_local_gateway`, uživatelské entity, společnou kartu a vzory akcí. Zavést malé interní rozhraní pro inventář, schopnosti, otevření/zavření streamu, PTZ a další funkce až podle potřeby. Stávající `GatewayClient` zapojit jako adaptér pro externí režim. Oba backendy musí projít stejnými kontraktovými testy entit. Výběr backendu patří do nastavení integrace. Pokud se účetní DID liší od dosavadního ID gateway, průvodce nabídne mapování na existující kameru; při návratu zůstává URL a token v datech téže položky.
 2. Přímý backend postavit jako samostatně testovatelnou asynchronní Python knihovnu bez závislosti na HA. Jako referenci použít Go implementaci MISS/CS2, profily, normalizované výsledky a existující regresní případy. Nejprve ověřit existující knihovny na přesných modelech a licencích. Pokud vhodná knihovna pokrývá jen část, doplnit chybějící části s doloženým původem kódu a zachovanými licenčními oznámeními. Závislost připnout na vydanou verzi.
 3. Python je výchozí varianta. Nativní modul má smysl posoudit jen pokud funkční prototyp narazí na měřitelný výkonový limit nebo nutnou knihovnu. V takovém případě vyžadovat testované balíčky pro Python a platformy podporovaných verzí HA, alespoň Linux amd64 a aarch64, reprodukovatelný build a instalaci bez kompilátoru, rootu a ruční instalace binárek. Pokud žádná varianta neprojde, ponechat přímý režim experimentální a zdokumentovat konkrétní blokátor.
 4. Nepřepisovat celý Go backend najednou. Začít jednou C201 a svislým řezem od inventáře po dekódovaný snímek a uvolnění relace. Pomocí stejného kontraktu potom rozšiřovat funkce a modely. Profil vést podle modelového ID, doloženého firmwaru a regionu, po jednotlivých schopnostech. Přidat kontrolu rozdílů profilů Go a Python pro podporované průniky.
@@ -64,6 +68,10 @@ flowchart LR
 
 ## 4. Pořadí implementace
 
+[Matice funkcí a pravidla pro nové kamery](HA-CAMERA-CAPABILITIES.md) platí pro všechny modely. Chybějící ověření se eviduje jako práce k dokončení.
+
+Pro aktuální živé zkoušky používáme C701 (`chuangmi.camera.079ae2`). Pokrytí ostatních modelů zůstává v regresích a jejich fyzická přejímka má vlastní stav. Vstup do testovacího HA a zacílení preflightu jsou v [provozních poznámkách](HA-TEST-ENV.md).
+
 | Etapa | Změna a výstup | Podmínka dokončení |
 | --- | --- | --- |
 | D0 – reference | Zaznamenat funkce a přesné verze z posledních testů gateway. Vyčlenit kontrakty, anonymizované deterministické testovací případy, soupis licencí a zvolit testovací HA OS přímo na kamerové LAN. | Go baseline a verze HA dohledatelné; síťový preflight potvrdí potřebnou cestu nebo ukáže konkrétní blokátor. |
@@ -73,7 +81,7 @@ flowchart LR
 | D4 – Frigate | Bezpečný stabilní export, mapování jmen, volitelný restream v HA, detekce, záznam, MQTT a obnova. | Skutečný Frigate s fyzickými kamerami, přehratelný záznam a událost ve správné HA entitě, ověřený počet relací, záznam po výpadku znovu nabíhá. |
 | D5 – funkce a vydání | Rozšiřovat jednotlivé schopnosti, sepsat podporu per model, HACS instalaci, migraci a rollback. Přejmout čisté HA OS i HA Container, sledovat 24 h stabilitu. | Povinná matice je zelená pro deklarovaný rozsah; všechny čtyři kamery lze uvést jako podporované až po jejich vlastní přejímce. Omezení funkcí jsou vidět v HA a v dokumentaci. |
 
-D4 lze prototypovat už s C201 po D1, aby se včas ověřil export. [Handoff F01–F12 a M01–M07](LOCAL-CAMERA-HANDOFF.md) zůstává seznamem funkcí a dalších modelů. Pro přímý režim se každá funkce přejímá zvlášť. Po videu, JPEG, HA záznamu a čtyřech směrech pohybu následují audio a kvalita, noční režim a indikátor, soukromí, stav/kapacita SD, index a přehrání SD klipů, presety/limity/zoom a tracking, obousměrné audio a ostatní modelové funkce. Nepodporované či neověřené akce se nenabízejí. Fyzický AW300 je pevná kamera, PTZ se pro ni nepřejímá.
+D4 lze prototypovat už s C201 po D1, aby se včas ověřil export. [Handoff F01–F12 a M01–M07](LOCAL-CAMERA-HANDOFF.md) zůstává seznamem funkcí a dalších modelů. Pro přímý režim se každá funkce přejímá zvlášť. Po videu, JPEG, HA záznamu a čtyřech směrech pohybu následují audio a kvalita, noční režim a indikátor, soukromí, stav/kapacita SD, index a přehrání SD klipů, presety/limity/zoom a tracking, obousměrné audio a ostatní modelové funkce. Funkci s doloženým mapováním a implementací lze nabídnout jako experimentální do dokončení přejímky. Funkce známé pouze ze specifikace zůstávají v matici k doplnění. Fyzický AW300 je pevná kamera, PTZ se pro ni nepřejímá.
 
 Pro vydání nejdřív vyzkoušet novou instalaci a přechod na kopii testovací konfigurace. Přechod ověřit podle chování dashboardu i existující automatizace, ne pouze podle jmen entit. Při selhání přihlášení, ztrátě identity entity, nefunkčním obrazu nebo neobnoveném záznamu použít návrat v průvodci a ověřit, že znovu běží původní zdroj. Chování po aktualizaci integrace a návrat k původní verzi popsat v návodu k vydání.
 
@@ -92,12 +100,13 @@ Povinné negativní případy pro E2E: neplatná autorizace, jiný účet/region
 
 ### Fyzické minimum a měřitelné cíle
 
-| Model | Výchozí evidence přes gateway | Povinný přímý test |
+| Model | Aktuální přímá evidence (20. 11. 2026) | Zbývající přímý test |
 | --- | --- | --- |
-| C201 `xiaomi.camera.c201` | Živý obraz, historicky čtyři fyzické PTZ směry; proměnlivé počáteční rozlišení. | První kompletní řez, video po LAN, dekódované JPEG/MP4, čtyři fyzicky potvrzené směry a obnova streamu. Zaznamenat počáteční a ustálené rozlišení. |
-| Mi 360 `chuangmi.camera.026c02` | Živý obraz; historicky fyzický krok doleva. | Video a obnova, fyzicky potvrdit všechny nabízené směry, souběh s C201 a C400. |
-| C400 `chuangmi.camera.039a04` | Živý obraz 2560×1440 při úspěšné relaci; HA přijal PTZ, pohyb nebyl v posledním testu měřen. | Opakovaná relace s vyjednaným transportem, dekódované rozlišení při zvolené kvalitě, čtyři skutečné směry a správná kamera u každého tlačítka. |
-| Outdoor AW300 `mxiang.camera.mod13` | Jeden dekódovaný běh, další pokusy nedodaly první médium. | Porovnat s referenční gateway a Xiaomi Home, změřit průchod od připojení k prvnímu snímku, několik samostatných startů, stabilní běh a obnovu na konkrétním firmwaru. |
+| C201 `xiaomi.camera.c201` | Uživatel potvrzuje živý obraz a fyzický pohyb PTZ. Dříve fyzicky ověřené JPEG/MP4. | Fyzická obnova streamu po výpadku a delší stabilita. |
+| Mi 360 `chuangmi.camera.026c02` | Uživatel potvrzuje živý obraz. [Následný izolovaný gateway/konzolový běh](LOCAL-CAMERA-PROGRESS.md#mi360-one-left-isolated-run-2026-11-15) poslal jeden krok doleva a obrazový posun odpovídal pohybu; to nepotvrzuje PTZ přímé integrace. | Fyzicky ověřit PTZ přímé integrace a další směry; obnova a souběh s C201/C400. |
+| C400 `chuangmi.camera.039a04` | Uživatel potvrzuje živý obraz a fyzický pohyb PTZ. Nízký 864×480 a plný 2560×1440 profil byly dříve fyzicky přehrány. | Fyzická obnova po výpadku a delší stabilita. |
+| C701 `chuangmi.camera.079ae2` | Uživatel potvrzuje živý obraz a fyzický pohyb PTZ. | Opakovatelnost studeného startu, obnova a dlouhodobý běh. |
+| Outdoor AW300 `mxiang.camera.mod13` | Stream čeká na pozdější ověření. Starší běh jednou dekódoval obraz, následné pokusy nedodaly první médium. | Porovnat se současným náhledem Xiaomi Home a gateway; provést několik startů, stabilní běh a obnovu na konkrétním firmwaru. |
 
 - Navržené výchozí limity pro stabilní LAN: prvních **5 startů z 5** na model, první dekódovaný snímek do **15 s** v každém pokusu, **10 minut** dekódovaného obrazu na model a **30 minut** společné karty se souběžným postupem videa. Snímek musí jít dekódovat, MP4 musí obsahovat přehratelné video v dohodnuté toleranci délky a PTZ musí způsobit očekávaný fyzický pohyb bez pohybu jiné kamery. Samotný HTTP úspěch nestačí. Zvolený prohlížeč a podporované kodeky zapsat do výsledku.
 - Pro řízený výpadek měřit čas od návratu kamery, sítě nebo HA do provozu. Navržený limit je **60 s** do dekódovaného obrazu bez ruční obnovy stránky a **90 s** do nového přehratelného segmentu Frigate. Po posledním odběrateli se relace uvolní v dokumentované době nejvýše **30 s**. Souběžný záznam, dashboard a snímek nepřidají další relaci na stejném kanálu. Volitelný substream má vlastní explicitní limit.

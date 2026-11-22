@@ -1,5 +1,30 @@
 # Local integration test stack
 
+Before selecting physical cameras for development, scan the inventory stored by
+the local direct integration. The scanner selects the current source IP, sends
+one unicast CS2 request per valid private camera IP (no broadcast or retry),
+and saves a sanitized JSON report. `available` means the selected source is in the camera LAN, the
+camera replied, and the stored source address matches the current route. A
+routed reply outside that LAN is reported separately because the integration
+currently requires a same-subnet source. Entries with missing or malformed IP
+or subnet data remain in the report with an inventory status, while valid
+private IPs continue through route selection and probing even if their stored
+subnet is missing. A CS2 reply without a valid stored subnet never sets
+`direct_usable`; missing, malformed, and public IPs are not probed.
+
+On the Windows test host:
+
+```powershell
+& .\.test-env\ha-native-win-py314\venv\Scripts\python.exe -B scripts\ha_camera_reachability.py `
+  --ha-config-dir .test-env\ha-native-win-py314\config `
+  --output .test-env\ha-native-win-py314\camera-reachability.json
+```
+
+On a Linux HA host, pass its config directory, for example:
+`python3 -B scripts/ha_camera_reachability.py --ha-config-dir /config --output /config/camera-reachability.json`.
+The report contains camera names, models, local addresses, route choices, and
+probe results; it does not include Xiaomi account credentials.
+
 For Xiaomi Camera Direct, run `python -B -m unittest discover -s tests -p "test_ha_direct_*.py"`
 from the repository root, using the pinned HA image or the dependencies
 in [requirements.txt](requirements.txt). The checks cover preflight, CS2 discovery
@@ -12,7 +37,21 @@ With Home Assistant and FFmpeg installed, run
 `python -B -m unittest discover -s tests/e2e -p test_ha_direct_ha_stream.py`
 to boot a disposable HA instance, decode its HLS, verify a JPEG snapshot and confirm
 connection cleanup, shared transport recovery for active viewers, PTZ routing, reauthentication,
-camera selection, C400 profile switching and retained entity identity.
+camera selection, C400 profile switching, C201 audio opt-in with HLS audio decode,
+and retained entity identity.
+
+For the D2 backend contract and gateway/direct rollback, run these targeted
+checks sequentially in the same pinned Home Assistant Python environment:
+
+```powershell
+& .\.test-env\ha-native-win-py314\venv\Scripts\python.exe -B -m unittest discover -s tests -p test_backend_contract.py
+& .\.test-env\ha-native-win-py314\venv\Scripts\python.exe -B -m unittest discover -s tests\e2e -p test_ha_backend_switch.py
+```
+
+The E2E boots a disposable HA instance with simulated backends, checks entity
+and device identity across a switch and rollback, verifies lazy stream opening,
+and confirms the gateway stream and PTZ contract after rollback. It makes no
+requests to Xiaomi or a physical camera.
 
 From the repository root, run the quick camera regression in a disposable
 Linux container:

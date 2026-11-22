@@ -18,6 +18,10 @@ and the keys needed to open a new local camera session.
    For a C400 in the European region, select the camera under **C400 cameras
    to stream at lower resolution** to reduce bandwidth. Saving reloads the
    account entry and applies the selected profile when the stream next opens.
+   **C201 microphone (experimental)** enables audio on the selected C201
+   streams in the European region. It defaults to off. If enabled, a supported
+   microphone track is available in native HA playback and can be included in
+   recordings. The audio implementation accepts Opus, G.711 A-law and μ-law.
 
 The direct integration runs inside HA Core. The Go gateway is available
 separately for diagnostics, reference testing and standalone deployments.

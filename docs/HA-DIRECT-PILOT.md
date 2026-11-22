@@ -2,6 +2,66 @@
 
 Provozní nastavení nativního testovacího Home Assistantu, start instance, porty a cesta k panelu jsou zapsané v [runbooku testovacího HA](HA-TEST-ENV.md).
 
+### Rozšíření poslechu na C400 — 22. 11. 2026
+
+Sonda C400 s audio flagem a běžným výběrem transportu zachytila 8 videopaketů a 26 paketů Opus. Po nasazení volby mikrofonu v testovacím HA a sjednocení karty dekódoval přímý stream 21 snímků v rozlišení 2560 × 1440 a obsahoval stopu AAC. Čtyři testy modelových voleb prošly. Poslech na fyzickém reproduktoru, zpětný hovor a nižší profil C400 se zvukem zůstávají bez živé přejímky. [Přímá sonda](../.test-env/ha-native-win-py314/additional-camera-audio-20261122.log) · [HA zkouška](../.test-env/ha-native-win-py314/c400-ha-audio-live-20261122.log) · [Regrese voleb](../.test-env/ha-native-win-py314/c400-audio-options-20261122.log).
+
+Po doplnění AW300 prošlo pět regresních testů voleb. C400 při samostatném mapování zvukové stopy z HLS dekódovala 2 s zvuku do nulového výstupu. U AW300 profil 0 přes UDP opakovaně dodal obraz a Opus, ale v HLS Home Assistantu zvuková stopa chyběla i po dočasném prodloužení čekání na audio. AW300 má příjem zapnutý v testovacím HA jako experimentální. Mi 360 SE+ skončila na timeoutu CS2 ještě před médii a její karta zůstává v režimu videa. [Dekódování C400](../.test-env/ha-native-win-py314/c400-aw300-ha-audio-decoded-final-20261122.log) · [Sonda AW300](../.test-env/ha-native-win-py314/aw300-audio-timestamps-20261123.log) · [HLS AW300](../.test-env/ha-native-win-py314/aw300-ha-audio-after-prelude-20261123.log).
+
+### Jedno ovládání poslechu pro C201 a C701 — 22. 11. 2026
+
+V místním HA je povolený příjem zvuku u obou podporovaných kamer. Jediný profil na každé kartě startuje ztlumený. Poslech se ovládá reproduktorem v obraze a hlasitostí pod ním. U C201 parametr `push_to_talk: false` schová tlačítko hovoru. HA vrátil obě uložené karty a odpovídající zdroj JS.
+
+Ověření na běžící přímé integraci potvrdilo obnovení přenosu C201 po zapnutí audio profilu. C201 dala 34 živých snímků v 848 × 480, C701 20 v 3840 × 2160. Oba vstupy v HA měly zvukovou stopu AAC. Tento běh měřil metadata a dekódoval obraz. Slyšitelný poslech a přenos hovoru se při něm neověřovaly. [Záznam běhu](../.test-env/ha-native-win-py314/supported-camera-audio-live-20261122.log).
+
+### C701 a C201 po změně adresy — 22. 11. 2026
+
+Na hostiteli HA `192.168.2.145/24` C701 změnila adresu z `192.168.3.187` na `192.168.2.188`. Nová adresa souhlasila v účtu Xiaomi i v tabulce sousedů Windows. Znovunačtení výhradně položky Xiaomi Camera Direct zaktualizovalo IP a lokální trasu. HA poté dekódoval 20 živých snímků 3840 × 2160 a uložil dekódovatelný JPEG stejného rozlišení. [Adresy z účtu](../.test-env/ha-native-win-py314/c201-c701-current-addresses-20261122.log) · [Ověření C701](../.test-env/ha-native-win-py314/c701-ha-after-reload-20261122.log).
+
+Účet Xiaomi hlásil C201 jako online na `192.168.2.124`. Z hostitele HA na stejné Wi-Fi se nepotvrdila odpověď cíle na ICMP, systém hlásil souseda `Unreachable` a CS2 handshake vypršel. Lokální video tak v tomto běhu zůstalo nedostupné. [Síť C201](../.test-env/ha-native-win-py314/c201-ip-neighbor-20261122.log) · [Pokus o přenos z HA](../.test-env/ha-native-win-py314/c201-c701-ha-recheck-20261122.log).
+
+Při další cílené kontrole ve 22:22 C201 na stejné adrese odpověděla na jeden ze dvou pingů (84 ms) a také na unicast CS2/UDP. Přímý HA stream ale nedodal žádný snímek a JPEG akce vrátila HTTP 500 po timeoutu. HA zaznamenal `CS2 handshake socket failed`. Obnovila se tedy základní síťová dosažitelnost a odpověď na vyhledávací paket, zatím bez potvrzeného navázání relace pro obraz. [Sonda C201](../.test-env/ha-native-win-py314/c201-ping-return-preflight-20261122.json) · [Pokus přes HA](../.test-env/ha-native-win-py314/c201-ping-return-ha-20261122.log).
+
+#### Navazující headless kontrola C201 — 22. 11. 2026
+
+Výsledek headless kontroly entity `camera.xiaomi_c201_direct`: síťový ping měl 1 odpověď ze 2 (84 ms; jedna ztráta), sonda CS2/UDP dostala odpověď a podmínky trasy byly splněné (`direct_usable=true`, zdroj `192.168.2.145/24`). Živý obraz skončil s 0 dekódovanými snímky. V logu HA je pro tento pokus zaznamenáno `CS2 handshake socket failed`; stream worker následně ohlásil chybu 5xx. Akce snapshotu skončila po 10 sekundách chybou `Unable to get snapshot: Timed out after 10 seconds` a požadavek vrátil HTTP 500. Nepřihlášený GET `/api/` vrátil očekávané 401. Jde o potvrzenou hranici postupu: odpověď na vyhledávací CS2 paket proběhla, ale navázání relace pro média se nepotvrdilo. Historické úspěšné ověření C201 živého obrazu, JPEG a MP4 zůstává v níže uvedených starších záznamech; v tomto běhu se obnova obrazu ani JPEG nepotvrdila. [Sanitizovaný výsledek HA](../.test-env/ha-native-win-py314/c201-ping-return-ha-20261122.log) · [Sanitizovaná diagnostika HA](../.test-env/ha-native-win-py314/c201-ping-return-ha-diagnostic-20261122.log) · [Report sondy CS2](../.test-env/ha-native-win-py314/c201-ping-return-preflight-20261122.json).
+
+### Regrese přímého panelu po startu — 22. 11. 2026
+
+Testovací HA po startu znovu zaregistroval statickou kartu pod starou URL `?v=0.3.5`. Prohlížeč pro tuto URL použil starou kartu s překryvem ovladačů. Registrace nyní používá otisk souboru JS a běžící nativní HA má resource `?v=7377f08f6b9288ef`. Po obnovení stránky byly ovladače C701 pod přehrávačem a starý překryv chyběl.
+
+WebRTC v běžícím HA se připojovalo na nespouštěný lokální go2rtc na `127.0.0.1:56266`. Nový spouštěč [start-native-direct-ha.ps1](../scripts/start-native-direct-ha.ps1) ověřil službu a spustil ji před kontrolou HA. V prohlížeči poté běžela AW300 (2304 × 1296, čas 6,36 → 11,09 s) a C400 (2560 × 1440, čas 4,44 → 9,17 s). U C701 přetrvávala nedostupnost vlastní kamerové entity z aktuální sítě. C201 a Mi 360 ve stejném odečtu neměly dekódovaný snímek.
+
+Cílená regrese v izolovaném HA potvrdila registraci URL podle otisku karty při načtení integrace (1 test, kód 0). [Log regrese](../.test-env/ha-native-win-py314/direct-card-cache-e2e-final.log).
+
+## Přesun do sítě 192.168.2.0/24 — 22. 11. 2026
+
+První sonda z Windows hostitele vybrala zdroj `192.168.2.145` a všech pět uložených adres vypršelo. HA na portu 56264 odmítal spojení. Po ověření, že PID ze starého zámku neběží, byl HA spuštěn se stávající konfigurací. UI a JavaScriptové prostředky odpověděly HTTP 200 a nepřihlášené API vrátilo očekávané HTTP 401.
+
+Obnova inventáře doplnila lokální trasu `192.168.2.145/24` pro AW300, C201, C400 a Mi 360. V nové jednorázové unicast sondě odpověděla AW300. C201, C400 a Mi 360 vypršely i po obnovení trasy. C701 zůstala evidovaná na `192.168.3.187` bez použitelné trasy pro přímý transport. První a opakovaná sonda byly oddělené změnou provozního stavu a obnovou inventáře. [První report](../.test-env/ha-native-win-py314/camera-reachability-20261122.json) · [Report po startu HA](../.test-env/ha-native-win-py314/camera-reachability-20261122-after-start.json).
+
+| Kamera | CS2 unicast | Výsledek přes nativní HA na portu 56264 |
+| --- | --- | --- |
+| Outdoor AW300 | Odpověď | Živý obraz 2304 × 1296, 20 dekódovaných snímků. JPEG dekódován. MP4 23,50 s, prvních 20 snímků dekódováno. |
+| C400 | Timeout | Živý obraz 2560 × 1440, 20 dekódovaných snímků. JPEG dekódován. MP4 21,97 s, prvních 20 snímků dekódováno. |
+| C201 | Timeout | Běžná cesta HA také vypršela při CS2 handshaku, 0 snímků. Akce JPEG vrátila 500 po timeoutu. |
+| Mi 360 | Timeout | Běžná cesta HA vypršela při CS2 handshaku, 0 snímků. Akce JPEG vrátila 500. |
+| C701 | Timeout, bez použitelné trasy | Živý přenos se v této síti nespouštěl. Dřívější přejímka 4K, JPEG, MP4 a PTZ platí pro dřívější síť. |
+
+Přímý klient HA má jinou cestu navázání relace než jednorázová unicast sonda. C400 je v tomto běhu doložený příklad, kdy unicast vypršel a přenos z HA přesto fungoval. Předchozí pokus o test médií se zastavil na dočasném timeoutu přístupu k HA, při úspěšném běhu API odpovědělo HTTP 401 na nepřihlášený GET. [Sanitizované výsledky médií](../.test-env/ha-native-win-py314/direct-camera-matrix-20261122-final.log).
+
+U C400 prošla také zkouška přímých tlačítek PTZ. Po dekódování 20 živých snímků HA vrátil HTTP 200 pro jeden krok vlevo a jeden krok zpět vpravo. V tomto běhu se fyzický posun vizuálně neměřil. [Výsledek PTZ](../.test-env/ha-native-win-py314/c400-direct-ptz-final-20261122.log).
+
+Na skutečné C201 prošlo čtení hodnot přes autorizovaný Xiaomi účet z pracovní kopie integrace. Noční režim vrátil kód 2, kontrolka a detekce osob byly zapnuté, detekce pohybu a zvířat vypnuté. SD vrátila kód 0 a hodnoty celkem 62565824, volno 39831219, využito 22734604. Jednotky kapacity a význam kódu SD se samostatně neověřovaly. Pro tento běh se diagnostické entity nenasazovaly do živé testovací instance HA. [Čtení C201](../.test-env/ha-native-win-py314/c201-cloud-diagnostics-20261122.log).
+
+## C701 jako referenční kamera — 21. 11. 2026
+
+V prohlížeči Codexu se načetl [panel Xiaomi přímo → Kamery](http://127.0.0.1:56264/xiaomi-direct/kamery). Video karty C701 mělo 3840 × 2160, `readyState=4` a přehrávací čas postupoval. Přehled na portu 56259 ukazuje jinou instanci HA.
+
+Preflight s filtrem `--model chuangmi.camera.079ae2` sondoval jednu kameru. C701 odpověděla na CS2 a podmínky přímé trasy byly splněné. Sedm testů preflightu prošlo včetně scénáře, který ověřuje, že se pro ostatní modely nevolá sonda. [Report C701](../.test-env/ha-native-win-py314/c701-reachability-20261121.json) · [Log testů](../.test-env/ha-native-win-py314/c701-accept-unit-20261121.log).
+
+Standardní akce HA pro `camera.xiaomi_c701_direct` vytvořily JPEG (1 317 648 bajtů) a MP4 (23,81 s při požadavku na 20 s). FFmpeg dekódoval snímek a první dvě sekundy obrazu z MP4, oba běhy skončily s kódem 0. První pokus skončil HTTP 401 před vytvořením média a úspěšný běh použil obnovenou místní relaci HA. [Log přejímky C701](../.test-env/ha-native-win-py314/c701-accept-capture-refresh-20261121.log).
+
 ## Kontrolní bod testovacího HA — 20. 11. 2026
 
 Uložená kopie konfigurace je `.test-env/ha-native-win-py314/checkpoints/2026-11-20-known-good`. Manifest pokrývá 69 souborů; hashe sedí a 13 chráněných položek DPAPI se úspěšně obnovilo pod stejným účtem Windows. Postup obnovy a umístění souborů karet popisuje README v kontrolním bodu. Kopie je lokální a ignorovaná Gitem; necommitovat.
@@ -27,7 +87,7 @@ Jde o nejnovější potvrzený uživatelský stav a přepisuje starší výsledk
 | Funkce | Stav | Rozsah důkazu / mezera |
 | --- | --- | --- |
 | QR přihlášení, inventář, výběr a opětovná autorizace | Implementováno; regresně ověřeno | Simulované HA flow testy prošly. Účet v testovacím HA načetl kamerový inventář; změna sítě a obnovení každé položky se musí řídit čerstvým preflightem. |
-| Snapshot a krátký záznam | Implementováno | Na přímé C201 jsou fyzicky uložené a dekódované JPEG a MP4. Akce jsou v dashboardu i u dalších kamer, ale tento průkaz se nerozšiřuje na jejich fyzické záznamy. |
+| Snapshot a krátký záznam | Implementováno a ověřeno na čtyřech modelech | JPEG a MP4 prošly na přímých C201, C701, C400 a AW300. Mi 360 čeká na dostupnou přímou relaci. |
 | Rozlišení C400 | Implementováno; fyzicky ověřeno | Nízký 864×480 a plný 2560×1440 profil byly přehrány na C400. |
 | PTZ směrový krok | Implementováno | Fyzický pohyb C201, C400 a C701 je potvrzen uživatelem. U Mi 360 [následný izolovaný běh přes gateway](LOCAL-CAMERA-PROGRESS.md#mi360-one-left-isolated-run-2026-11-15) doložil jeden krok doleva; přímé PTZ a ostatní směry Mi 360 zůstávají otevřené. Zoom, presety, limity a tracking nejsou ověřené. |
 | Obnova při změně IP/trasy | Implementováno; simulovaná HA regrese prošla | Kamera bez platné trasy zůstane nedostupná a bez streamu; po nalezení nové trasy se stejná entita se stejným `entity_id` znovu zpřístupní a stream se obnoví. Pět testů skončilo `OK`: [log testu](../.test-env/ha-native-win-py314/test-ha-direct-stream-route-refresh-e2e-loopback.log). Jde o simulaci; fyzický výpadek a návrat sítě v reálném HA zůstávají otevřené. |
@@ -36,10 +96,16 @@ Jde o nejnovější potvrzený uživatelský stav a přepisuje starší výsledk
 | Příjem zvuku z C701 | Odtlumení ověřeno v Codexu, slyšitelný poslech čeká na přejímku. | Vestavěná ikona WebRTC v MSE přepnula ztlumení oběma směry. Samostatná HLS sonda naměřila velmi slabou zvukovou stopu. |
 | Hovor z HA do reproduktoru C701 | Ovládání načtené a povolené; fyzický přenos čeká na ruční zkoušku | Karta zobrazuje aktivní stav mikrofonu C701 a tlačítko „Podrž pro mluvení“. Kód otevírá mikrofon prohlížeče pouze při podržení; server má deadman 0,8 s a limit 30 s. Opus jde přes autentizovaný HA WebSocket a MISS kanál 3. Skutečné odeslání řeči do reproduktoru ještě nebylo ověřeno; browser musí při prvním použití dostat oprávnění k mikrofonu. |
 | Talkback ostatních modelů | Neimplementováno | Ovládání reproduktoru se nezobrazuje mimo opt-in C701. |
-| SD stav a kapacita | Gateway: implementováno, offline/HA regresně ověřeno; fyzické hodnoty otevřené | Jde o read-only cloud MIoT senzory gateway; není to hotová schopnost přímé integrace. SD index a přehrávání klipů chybí. |
+| SD stav a kapacita C201 | Diagnostika v izolovaném HA, skutečné hodnoty přečtené z pracovní kopie | Čtyři diagnostické entity jsou ve výchozím stavu vypnuté. Po povolení sdílejí dotaz přes Xiaomi účet s režimem nočního vidění a kontrolkou. Stav je číselný kód a hodnoty kapacity jsou bez ověřených jednotek. Index a přehrávání SD klipů zůstávají v plánu. |
+| Noční režim a kontrolka C201 | Diagnostika pouze pro čtení v přímé integraci | U zařízení C201 povol diagnostické entity **Režim nočního vidění** a **Kontrolka zapnutá**. Výchozí stav je vypnuto v registru entit. Aktivní entity sdílejí jeden dotaz přes Xiaomi účet na kameru. Prošlo 10 testů účtu a cílený scénář v izolovaném HA ověřil registraci u stejného zařízení, nulový počet dotazů při výchozím vypnutí a načtení hodnot simulátoru jedním dotazem. Fyzická přejímka je otevřená. |
+| Nastavení detekce C201 | Diagnostika pouze pro čtení v přímé integraci | U zařízení C201 lze povolit entity **Detekce pohybu zapnutá**, **Detekce osob zapnutá** a **Detekce zvířat zapnutá**. Sdílejí dotaz přes Xiaomi účet se stávající diagnostikou. Stav vypnuto vyžaduje platnou hodnotu od kamery. Fyzické ověření a živé události detekce zůstávají otevřené. |
 | Pohybové události a Frigate | Simulované mapování ověřeno; přímý export do Frigate otevřený | MQTT testy gateway prošly. Přímý stabilní export, skutečný Frigate záznam/detekce a obnova po výpadku nebyly fyzicky převzaty. |
-| Noční režim, privacy, LED, tracking a další modelové funkce | Neúplné / nepřevzaté pro přímý backend | Read-only nastavení C201 existují v gateway; přímá fyzická funkčnost a ostatní modely mají vlastní otevřené přejímky. |
+| Změna nočního režimu a kontrolky, soukromí, tracking | Otevřené pro přímý backend | U C201 je doložené mapování čtení nočního režimu a kontrolky. Režim soukromí vyžaduje ověření chování kamery a mediální relace. |
 | Stabilita vydání | Neověřena | Chybí 24hodinový běh, čistá instalace na cílovém HA OS a fyzický test obnovy po restartu/výpadku. |
+
+Čtení SD karty prošlo v 10 testech účtu a v jednom cíleném scénáři izolovaného HA. Scénář potvrdil registraci entit u C201, společný dotaz a stav `unavailable` při chybějící hodnotě. [Výsledek HA testu](../.test-env/ha-native-win-py314/c201-sd-ha-e2e.log).
+
+Čtení nastavení detekce prošlo v 10 testech účtu a v izolovaném HA. Simulátor doložil stavy `on`, `off` a `unavailable` a sdílený dotaz se stávajícími diagnostickými entitami C201. [Výsledek HA testu](../.test-env/ha-native-win-py314/c201-detection-ha-e2e.log).
 
 ### C701 zvuk a ovládání karty v testovacím HA — 20. 11. 2026
 
