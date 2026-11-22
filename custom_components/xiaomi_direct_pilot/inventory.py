@@ -119,6 +119,15 @@ def merge_refreshed_camera(camera, saved):
     return current
 
 
+def excluded_camera_ids(cameras, options):
+    """Convert legacy selections to explicit exclusions using the saved inventory."""
+    if "excluded_camera_ids" in options:
+        return set(options["excluded_camera_ids"])
+    if "camera_ids" not in options:
+        return set()
+    return {item["device_id"] for item in cameras}.difference(options["camera_ids"])
+
+
 async def load_account_cameras(config):
     async with create_client_session() as client:
         account = XiaomiAccount(

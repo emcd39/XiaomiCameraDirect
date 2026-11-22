@@ -49,6 +49,21 @@
       "reauth_successful": "Xiaomi account authorization was renewed."
     }
   },
+  "entity": {
+    "sensor": {
+      "night_vision_mode": { "name": "Night vision mode" },
+      "sd_card_status": { "name": "SD card status (raw)" },
+      "sd_card_total": { "name": "SD total capacity (raw)" },
+      "sd_card_free": { "name": "SD free capacity (raw)" },
+      "sd_card_used": { "name": "SD used capacity (raw)" }
+    },
+    "binary_sensor": {
+      "indicator_light": { "name": "Indicator light enabled" },
+      "motion_detection": { "name": "Motion detection enabled" },
+      "human_detection": { "name": "Person detection enabled" },
+      "pet_detection": { "name": "Pet detection enabled" }
+    }
+  },
   "options": {
     "step": {
       "init": {
@@ -58,6 +73,8 @@
           "camera_ids": "Cameras",
           "c201_audio": "C201 microphone (experimental)",
           "c701_audio": "C701 microphone and talkback (experimental)",
+          "c400_audio": "C400 microphone (experimental)",
+          "aw300_audio": "AW300 microphone (experimental)",
           "c400_low_resolution": "C400 cameras to stream at lower resolution"
         }
       }

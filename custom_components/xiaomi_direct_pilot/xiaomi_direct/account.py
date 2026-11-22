@@ -28,6 +28,18 @@ _QR_START = URL("https://account.xiaomi.com/longPolling/loginUrl")
 _REGIONS = frozenset(("cn", "de", "i2", "ru", "sg", "us"))
 _REQUEST = "/v2/device/miss_get_vendor"
 _DEVICE_LIST = "/v2/home/device_list_page"
+_MIOT_GET = "/miotspec/prop/get"
+_C201_DIAGNOSTICS = {
+    (2, 3): ("night_shot", 255),
+    (4, 1): ("indicator_light", None),
+    (5, 1): ("motion_detection", None),
+    (8, 6): ("human_detection", None),
+    (8, 3): ("pet_detection", None),
+    (3, 1): ("sd_card_status", 100),
+    (3, 2): ("sd_card_total", 1 << 31),
+    (3, 3): ("sd_card_free", 1 << 31),
+    (3, 4): ("sd_card_used", 1 << 31),
+}
 _MAX_RESPONSE = 128 * 1024
 
 
@@ -362,7 +374,7 @@ class XiaomiAccount:
         return base64.b64decode(security, validate=True), account_cookies
 
     async def request(self, path, values):
-        if path not in (_REQUEST, _DEVICE_LIST):
+        if path not in (_REQUEST, _DEVICE_LIST, _MIOT_GET):
             raise AccountError("unsupported Xiaomi account request")
         try:
             async with self._lock:
@@ -384,6 +396,37 @@ class XiaomiAccount:
             reply = json.loads(_rc4(key, base64.b64decode(body, validate=True)))
         except (ClientError, TimeoutError, ValueError, TypeError, AttributeError) as error:
             raise AccountError(f"Xiaomi account request failed ({type(error).__name__})") from None
-        if not isinstance(reply, dict) or reply.get("code") != 0 or not isinstance(reply.get("result"), dict):
+        result = reply.get("result") if isinstance(reply, dict) else None
+        result_types = (dict, list) if path == _MIOT_GET else (dict,)
+        if not isinstance(result, result_types) or reply.get("code") != 0:
             raise AccountError("Xiaomi account request was rejected")
-        return reply["result"]
+        return result
+
+    async def read_c201_settings(self, device_id):
+        """Read C201 settings and raw SD diagnostics in one MIoT request."""
+        result = await self.request(_MIOT_GET, {"params": [
+            {"did": device_id, "siid": siid, "piid": piid}
+            for siid, piid in _C201_DIAGNOSTICS
+        ]})
+        rows = result.get("result") if isinstance(result, dict) else result
+        if not isinstance(rows, list):
+            raise AccountError("Xiaomi settings response is malformed")
+        settings = {}
+        for row in rows:
+            if not isinstance(row, dict) or type(row.get("code")) is not int or row["code"] != 0:
+                continue
+            if row.get("did", device_id) != device_id:
+                continue
+            siid, piid = row.get("siid"), row.get("piid")
+            if type(siid) is not int or type(piid) is not int:
+                continue
+            property_info = _C201_DIAGNOSTICS.get((siid, piid))
+            if property_info is None:
+                continue
+            key, maximum = property_info
+            value = row.get("value")
+            if maximum is None and type(value) is bool:
+                settings[key] = value
+            elif maximum is not None and type(value) is int and 0 <= value <= maximum:
+                settings[key] = value
+        return settings

@@ -8,4 +8,7 @@ C201_AUDIO = "c201_audio"
 C701_AUDIO = "c701_audio"
 C201_AUDIO_PROFILE = 2
 C400_MODEL = "chuangmi.camera.039a04"
+C400_AUDIO = "c400_audio"
+AW300_MODEL = "mxiang.camera.mod13"
+AW300_AUDIO = "aw300_audio"
 C400_LOW_RESOLUTION = "c400_low_resolution"

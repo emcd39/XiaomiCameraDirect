@@ -9,7 +9,7 @@ from homeassistant.helpers import config_validation as cv
 import voluptuous as vol
 
 from .const import (
-    C201_AUDIO, C201_AUDIO_PROFILE, C201_MODEL, C400_LOW_RESOLUTION, C400_MODEL,
+    AW300_AUDIO, AW300_MODEL, C201_AUDIO, C201_AUDIO_PROFILE, C201_MODEL, C400_AUDIO, C400_LOW_RESOLUTION, C400_MODEL,
     C701_AUDIO, C701_MODEL, DOMAIN,
 )
 from .inventory import QUALITY, camera_device_info, create_account
@@ -37,6 +37,8 @@ def camera_stream_settings(model, device_id, region, options):
     quality = QUALITY.get(model)
     audio = region == "de" and (
         (model == C201_MODEL and device_id in options.get(C201_AUDIO, ()))
+        or (model == C400_MODEL and device_id in options.get(C400_AUDIO, ()))
+        or (model == AW300_MODEL and device_id in options.get(AW300_AUDIO, ()))
         or (model == C701_MODEL and device_id in options.get(C701_AUDIO, ()))
     )
     if model == C201_MODEL and audio:
@@ -50,8 +52,9 @@ def camera_stream_settings(model, device_id, region, options):
 
 
 def _video_opener(hass, config, account=None, control=None, *, quality, entry=None, audio=False):
-    preference = "udp" if config.get("model") == "chuangmi.camera.026c02" else "auto"
-    if audio:
+    model = config.get("model")
+    preference = "udp" if model == "chuangmi.camera.026c02" or (model == AW300_MODEL and audio) else "auto"
+    if audio and model in {C201_MODEL, C701_MODEL}:
         preference = "tcp"
 
     @asynccontextmanager
@@ -141,7 +144,8 @@ class DirectCamera(Camera):
         self._media = media
         self._attr_available = media is not None
         self._attr_supported_features = CameraEntityFeature.STREAM if media else CameraEntityFeature(0)
-        self._attr_extra_state_attributes = {"model_id": model}
+        self._attr_capability_attributes = {"model_id": model}
+        self._attr_extra_state_attributes = {}
         self._attr_extra_state_attributes["audio_enabled"] = bool(audio_enabled and media is not None)
         self._attr_extra_state_attributes["talkback_enabled"] = bool(
             audio_enabled and model == C701_MODEL and media is not None
@@ -149,8 +153,8 @@ class DirectCamera(Camera):
         if quality is not None:
             self._attr_extra_state_attributes["requested_video_profile"] = quality
         if media is None:
-            self._attr_extra_state_attributes["direct_status"] = (
-                "no_lan_address" if model in QUALITY else "unsupported_model"
+            self._attr_capability_attributes["direct_status"] = (
+                "no_lan_address" if model in QUALITY else "model_profile_pending"
             )
 
     @property

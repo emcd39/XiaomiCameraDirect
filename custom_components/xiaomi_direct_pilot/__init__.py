@@ -2,19 +2,21 @@
 
 import logging
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from aiohttp import ClientSession
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP, Platform
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from .button import PTZ_MODELS, PTZControl
-from .const import DOMAIN, NAME
-from .inventory import account_cameras, create_account, merge_refreshed_camera, resolve_cameras
+from .const import C201_MODEL, DOMAIN, NAME
+from .inventory import account_cameras, create_account, excluded_camera_ids, merge_refreshed_camera, resolve_cameras
+from .settings import C201SettingsCoordinator
 from .xiaomi_direct.account import AccountAuthorizationError, AccountError, create_client_session
 from .xiaomi_direct.talkback_api import async_stop_talkback_for_sources, register_talkback_commands
 
 
-PLATFORMS = [Platform.CAMERA, Platform.BUTTON]
+PLATFORMS = [Platform.CAMERA, Platform.BUTTON, Platform.SENSOR, Platform.BINARY_SENSOR]
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -25,6 +27,7 @@ class DirectRuntime:
     cameras: list[dict]
     ptz: dict[str, PTZControl]
     media_sources: dict[str, object]
+    settings: dict[str, C201SettingsCoordinator]
 
 
 async def async_setup(hass, config):
@@ -41,11 +44,11 @@ async def async_setup(hass, config):
     resources = hass.data["lovelace"].resources
     await resources.async_get_info()
     resource_url = "/xiaomi-direct/xiaomi-direct-camera.js"
-    integration = hass.data.get("integrations", {}).get(DOMAIN)
-    version = getattr(integration, "version", "0.3.0")
-    versioned_url = f"{resource_url}?v={version}"
+    card_bytes = await hass.async_add_executor_job(card_path.read_bytes)
+    revision = sha256(card_bytes).hexdigest()[:16]
+    versioned_url = f"{resource_url}?v={revision}"
     for resource in resources.async_items():
-        if resource.get("url", "").startswith(resource_url):
+        if resource.get("url", "").partition("?")[0] == resource_url:
             if resource["url"] != versioned_url:
                 await resources.async_update_item(
                     resource["id"], {"res_type": "module", "url": versioned_url},
@@ -81,6 +84,7 @@ async def async_setup_entry(hass, entry):
     client = create_client_session()
     account = create_account(client, entry.data)
     saved = {item["device_id"]: item for item in entry.data["cameras"]}
+    excluded = excluded_camera_ids(saved.values(), entry.options)
     try:
         try:
             inventory = account_cameras(await account.devices())
@@ -96,16 +100,25 @@ async def async_setup_entry(hass, entry):
                     refreshed[device_id] = merge_refreshed_camera(item, saved.get(device_id))
                 saved = refreshed
                 data = {**entry.data, "cameras": list(saved.values())}
+                changes = {}
                 if data != entry.data:
-                    hass.config_entries.async_update_entry(entry, data=data)
-        if (selected := entry.options.get("camera_ids")) is not None:
-            saved = {device_id: item for device_id, item in saved.items() if device_id in selected}
+                    changes["data"] = data
+                if "camera_ids" in entry.options and "excluded_camera_ids" not in entry.options:
+                    changes["options"] = {**entry.options, "excluded_camera_ids": sorted(excluded)}
+                if changes:
+                    hass.config_entries.async_update_entry(entry, **changes)
+        saved = {device_id: item for device_id, item in saved.items() if device_id not in excluded}
         ptz = {
             device_id: PTZControl(hass, device_id)
             for device_id, item in saved.items()
             if item["model"] in PTZ_MODELS and "source_ip" in item
         }
-        entry.runtime_data = DirectRuntime(client, account, list(saved.values()), ptz, {})
+        settings = {
+            device_id: C201SettingsCoordinator(hass, entry, account, device_id)
+            for device_id, item in saved.items()
+            if item["model"] == C201_MODEL
+        }
+        entry.runtime_data = DirectRuntime(client, account, list(saved.values()), ptz, {}, settings)
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     except BaseException:
         await client.close()

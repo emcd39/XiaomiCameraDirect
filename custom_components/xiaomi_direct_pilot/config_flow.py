@@ -8,8 +8,11 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.selector import TextSelector, TextSelectorConfig, TextSelectorType
 import voluptuous as vol
 
-from .const import C201_AUDIO, C201_MODEL, C400_LOW_RESOLUTION, C400_MODEL, C701_AUDIO, C701_MODEL, DOMAIN, NAME
-from .inventory import account_cameras, resolve_cameras
+from .const import (
+    AW300_AUDIO, AW300_MODEL, C201_AUDIO, C201_MODEL, C400_AUDIO, C400_LOW_RESOLUTION,
+    C400_MODEL, C701_AUDIO, C701_MODEL, DOMAIN, NAME,
+)
+from .inventory import account_cameras, excluded_camera_ids, resolve_cameras
 from .xiaomi_direct.account import AccountChallenge, AccountError, XiaomiAccount, create_client_session
 
 
@@ -133,12 +136,15 @@ class DirectCameraConfigFlow(ConfigFlow, domain=DOMAIN):
 
 class DirectCameraOptionsFlow(OptionsFlowWithReload):
     async def async_step_init(self, user_input=None):
-        if user_input is not None:
-            return self.async_create_entry(data=user_input)
         cameras = self.config_entry.data["cameras"]
         options = self.config_entry.options
         choices = {item["device_id"]: item["name"] for item in cameras}
-        selected = [key for key in options.get("camera_ids", choices) if key in choices]
+        excluded = excluded_camera_ids(cameras, options)
+        if user_input is not None:
+            selected = set(user_input["camera_ids"])
+            excluded = (excluded - choices.keys()) | (choices.keys() - selected)
+            return self.async_create_entry(data={**user_input, "excluded_camera_ids": sorted(excluded)})
+        selected = [key for key in choices if key not in excluded]
         fields = {vol.Required("camera_ids", default=selected): cv.multi_select(choices)}
         if self.config_entry.data["region"] == "de":
             c201s = {item["device_id"]: item["name"] for item in cameras if item["model"] == C201_MODEL}
@@ -151,8 +157,14 @@ class DirectCameraOptionsFlow(OptionsFlowWithReload):
                 fields[vol.Optional(C701_AUDIO, default=audio)] = cv.multi_select(c701s)
             c400s = {item["device_id"]: item["name"] for item in cameras if item["model"] == C400_MODEL}
             if c400s:
+                audio = [key for key in options.get(C400_AUDIO, ()) if key in c400s]
+                fields[vol.Optional(C400_AUDIO, default=audio)] = cv.multi_select(c400s)
                 reduced = [key for key in options.get(C400_LOW_RESOLUTION, ()) if key in c400s]
                 fields[vol.Optional(C400_LOW_RESOLUTION, default=reduced)] = cv.multi_select(c400s)
+            aw300s = {item["device_id"]: item["name"] for item in cameras if item["model"] == AW300_MODEL}
+            if aw300s:
+                audio = [key for key in options.get(AW300_AUDIO, ()) if key in aw300s]
+                fields[vol.Optional(AW300_AUDIO, default=audio)] = cv.multi_select(aw300s)
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(fields),

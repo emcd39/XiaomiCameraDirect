@@ -49,6 +49,21 @@
       "reauth_successful": "Přihlášení k účtu Xiaomi bylo obnoveno."
     }
   },
+  "entity": {
+    "sensor": {
+      "night_vision_mode": { "name": "Režim nočního vidění" },
+      "sd_card_status": { "name": "Stav SD karty (kód)" },
+      "sd_card_total": { "name": "Celková kapacita SD (hodnota kamery)" },
+      "sd_card_free": { "name": "Volná kapacita SD (hodnota kamery)" },
+      "sd_card_used": { "name": "Využitá kapacita SD (hodnota kamery)" }
+    },
+    "binary_sensor": {
+      "indicator_light": { "name": "Kontrolka zapnutá" },
+      "motion_detection": { "name": "Detekce pohybu zapnutá" },
+      "human_detection": { "name": "Detekce osob zapnutá" },
+      "pet_detection": { "name": "Detekce zvířat zapnutá" }
+    }
+  },
   "options": {
     "step": {
       "init": {
@@ -58,6 +73,8 @@
           "camera_ids": "Kamery",
           "c201_audio": "Mikrofon C201 (experimentální)",
           "c701_audio": "Mikrofon a hovor C701 (experimentální)",
+          "c400_audio": "Mikrofon C400 (experimentální)",
+          "aw300_audio": "Mikrofon AW300 (experimentální)",
           "c400_low_resolution": "Kamery C400 s nižším rozlišením"
         }
       }

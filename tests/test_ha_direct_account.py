@@ -179,6 +179,51 @@ class AccountTest(unittest.IsolatedAsyncioTestCase):
         client = account.XiaomiAccount(Client(), region="de", user_id="test", pass_token="mock-pass")
         self.assertEqual(await client.request(path, {"did": "mock"}), {"ok": True})
 
+    async def test_c201_settings_signed_read_validates_partial_result(self):
+        security = b"settings-test"
+        test = self
+
+        class Client:
+            def post(self, url, *, data, **_):
+                test.assertEqual(url, "https://de.api.io.mi.com/app/miotspec/prop/get")
+                key = sha256(security + base64.b64decode(data["_nonce"])).digest()
+                decoded = account._rc4(key, base64.b64decode(data["data"]))
+                test.assertEqual(json.loads(decoded), {"params": [
+                    {"did": "c201", "siid": 2, "piid": 3},
+                    {"did": "c201", "siid": 4, "piid": 1},
+                    {"did": "c201", "siid": 5, "piid": 1},
+                    {"did": "c201", "siid": 8, "piid": 6},
+                    {"did": "c201", "siid": 8, "piid": 3},
+                    {"did": "c201", "siid": 3, "piid": 1},
+                    {"did": "c201", "siid": 3, "piid": 2},
+                    {"did": "c201", "siid": 3, "piid": 3},
+                    {"did": "c201", "siid": 3, "piid": 4},
+                ]})
+                rows = [
+                    {"did": "c201", "siid": 2, "piid": 3, "code": 0, "value": 2},
+                    {"did": "c201", "siid": 4, "piid": 1, "code": 0, "value": False},
+                    {"did": "other", "siid": 2, "piid": 3, "code": 0, "value": 1},
+                    {"did": "c201", "siid": 2, "piid": 3, "code": -1, "value": 1},
+                    {"did": "c201", "siid": 4, "piid": 1, "code": 0, "value": 1},
+                    {"did": "c201", "siid": 3, "piid": 1, "code": 0, "value": 0},
+                    {"did": "c201", "siid": 3, "piid": 2, "code": 0, "value": 128},
+                    {"did": "c201", "siid": 3, "piid": 3, "code": 0, "value": True},
+                    {"did": "c201", "siid": 3, "piid": 4, "code": 0, "value": -1},
+                    {"did": "c201", "siid": 5, "piid": 1, "code": 0, "value": True},
+                    {"did": "c201", "siid": 8, "piid": 6, "code": 0, "value": False},
+                    {"did": "c201", "siid": 8, "piid": 3, "code": -1, "value": False},
+                ]
+                payload = json.dumps({"code": 0, "result": rows}).encode()
+                return Response(base64.b64encode(account._rc4(key, payload)))
+
+        client = account.XiaomiAccount(Client(), region="de", user_id="test", pass_token="mock")
+        client._session = security, {}
+        self.assertEqual(await client.read_c201_settings("c201"), {
+            "night_shot": 2, "indicator_light": False,
+            "sd_card_status": 0, "sd_card_total": 128,
+            "motion_detection": True, "human_detection": False,
+        })
+
     async def test_refuses_untrusted_sign_in_target_before_request(self):
         class Client:
             calls = 0

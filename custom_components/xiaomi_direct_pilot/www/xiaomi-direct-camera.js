@@ -21,6 +21,7 @@ class XiaomiDirectCameraCard extends HTMLElement {
           flex-wrap: wrap; gap: 8px 16px; padding: 8px 12px;
           background: var(--card-background-color); color: var(--primary-text-color); }
         label, .talkback { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+        .talkback[hidden] { display: none; }
         input { width: 88px; accent-color: var(--primary-color); }
         button { border: 1px solid var(--divider-color); border-radius: 8px; padding: 6px 10px;
           background: transparent; color: inherit; font: inherit; touch-action: none; user-select: none; }
@@ -39,6 +40,7 @@ class XiaomiDirectCameraCard extends HTMLElement {
     this._camera = undefined;
     this._videoHost = root.querySelector(".video");
     this._volumeSlider = root.querySelector("input");
+    this._talkback = root.querySelector(".talkback");
     this._button = root.querySelector(".talkback button");
     this._status = root.querySelector(".status");
     this._volumeSlider.addEventListener("input", () => {
@@ -70,6 +72,11 @@ class XiaomiDirectCameraCard extends HTMLElement {
   setConfig(config) {
     if (!config.entity) throw new Error("Xiaomi Direct card requires an entity");
     this._config = { ...config };
+    this._talkback.hidden = config.push_to_talk === false;
+    if (this._talkback.hidden) {
+      this._button.disabled = true;
+      this._release();
+    }
     const cameraConfig = { ...config };
     delete cameraConfig.type;
     delete cameraConfig.push_to_talk;
@@ -103,7 +110,8 @@ class XiaomiDirectCameraCard extends HTMLElement {
     this._hass = hass;
     if (this._camera) this._camera.hass = hass;
     const state = this._config && hass.states[this._config.entity];
-    const enabled = state?.state !== "unavailable" && state?.attributes?.talkback_enabled === true;
+    const enabled = !this._talkback.hidden && state?.state !== "unavailable"
+      && state?.attributes?.talkback_enabled === true;
     this._button.disabled = !enabled;
     this._status.textContent = enabled ? "Mikrofon C701 je zapnutý v integraci" : "Zapni mikrofon C701 v nastavení integrace";
   }

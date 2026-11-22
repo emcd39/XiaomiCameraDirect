@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+from hashlib import sha256
 import io
 import logging
 from pathlib import Path
@@ -12,7 +13,6 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from aiohttp import ClientSession
 import av
 from homeassistant.bootstrap import async_setup_hass
 from homeassistant.components.camera import async_request_stream
@@ -24,6 +24,7 @@ from homeassistant.runner import RuntimeConfig
 
 from custom_components import xiaomi_direct_pilot
 from custom_components.xiaomi_direct_pilot import camera, config_flow
+from custom_components.xiaomi_direct_pilot.xiaomi_direct.account import create_client_session
 from custom_components.xiaomi_direct_pilot.xiaomi_direct.h264_video import H264Video
 from custom_components.xiaomi_direct_pilot.xiaomi_direct.ha_media import LocalMediaSource
 from custom_components.xiaomi_direct_pilot.xiaomi_direct.miss_media import AudioPacket, VideoFrame
@@ -186,7 +187,7 @@ class DirectHaStreamTest(unittest.IsolatedAsyncioTestCase):
         source = LocalMediaSource(open_mock, audio=True)
         await source.start()
         try:
-            async with asyncio.timeout(4), ClientSession() as client:
+            async with asyncio.timeout(4), create_client_session() as client:
                 async with client.get(source.url) as first, client.get(source.url) as second:
                     self.assertEqual((first.status, second.status), (200, 200))
                     self.assertEqual((await first.content.readexactly(1), await second.content.readexactly(1)),
@@ -307,6 +308,11 @@ stream:
                 account = SimpleNamespace(
                     user_id="mock-user", pass_token="mock-pass",
                     devices=AsyncMock(return_value={"list": camera_inventory}),
+                    read_c201_settings=AsyncMock(return_value={
+                        "night_shot": 2, "indicator_light": False,
+                        "sd_card_status": 0, "sd_card_total": 128, "sd_card_used": 32,
+                        "motion_detection": True, "human_detection": False,
+                    }),
                 )
                 route_state = {"available": True, "source_ip": "192.168.99.3"}
 
@@ -332,13 +338,69 @@ stream:
                     self.assertNotIn("password", entry.data)
                     self.assertEqual(entry.title, "Xiaomi Camera Direct")
                     await hass.async_block_till_done()
+                card = Path(xiaomi_direct_pilot.__file__).parent / "www/xiaomi-direct-camera.js"
+                revision = sha256(card.read_bytes()).hexdigest()[:16]
+                resources = hass.data["lovelace"].resources.async_items()
+                self.assertIn(
+                    f"/xiaomi-direct/xiaomi-direct-camera.js?v={revision}",
+                    [resource["url"] for resource in resources],
+                )
+                registry = entity_registry.async_get(hass)
+                camera_id = "camera.xiaomi_c201_direct"
+                device_id = registry.async_get(camera_id).device_id
+                self.assertIsNotNone(device_id)
+                self.assertEqual(registry.async_get("button.xiaomi_c201_direct_ptz_left").device_id, device_id)
+                self.assertEqual(len(entry.runtime_data.settings), 1)
+                settings_id, settings = next(iter(entry.runtime_data.settings.items()))
+                diagnostic_entity_ids = {}
+                for domain, key in (
+                    ("sensor", "night_shot"), ("binary_sensor", "indicator_light"),
+                    ("sensor", "sd_card_status"), ("sensor", "sd_card_total"),
+                    ("sensor", "sd_card_free"), ("sensor", "sd_card_used"),
+                    ("binary_sensor", "motion_detection"), ("binary_sensor", "human_detection"),
+                    ("binary_sensor", "pet_detection"),
+                ):
+                    entity_id = registry.async_get_entity_id(
+                        domain, xiaomi_direct_pilot.DOMAIN, f"xiaomi_direct_c201_{settings_id}_{key}",
+                    )
+                    diagnostic = registry.async_get(entity_id)
+                    self.assertEqual(diagnostic.device_id, device_id)
+                    self.assertTrue(diagnostic.disabled)
+                    diagnostic_entity_ids[key] = entity_id
+                account.read_c201_settings.assert_not_awaited()
+                for entity_id in diagnostic_entity_ids.values():
+                    registry.async_update_entity(entity_id, disabled_by=None)
+                # Reloading the entry lets HA add the now-enabled entities through
+                # their normal async_added_to_hass lifecycle, which requests the
+                # initial coordinator refresh.
+                with (
+                    patch.object(xiaomi_direct_pilot, "create_account", return_value=account),
+                    patch.object(xiaomi_direct_pilot, "resolve_cameras", resolve),
+                ):
+                    self.assertTrue(await hass.config_entries.async_reload(entry.entry_id))
+                    await hass.async_block_till_done()
+                settings = entry.runtime_data.settings[settings_id]
+                account.read_c201_settings.assert_awaited_once_with(settings_id)
+                self.assertEqual(settings.data, account.read_c201_settings.return_value)
+                self.assertEqual(hass.states.get(diagnostic_entity_ids["night_shot"]).state, "Auto")
+                self.assertEqual(hass.states.get(diagnostic_entity_ids["indicator_light"]).state, "off")
+                self.assertEqual(hass.states.get(diagnostic_entity_ids["motion_detection"]).state, "on")
+                self.assertEqual(hass.states.get(diagnostic_entity_ids["human_detection"]).state, "off")
+                self.assertEqual(hass.states.get(diagnostic_entity_ids["pet_detection"]).state, "unavailable")
+                self.assertEqual(hass.states.get(diagnostic_entity_ids["sd_card_status"]).state, "0")
+                self.assertEqual(hass.states.get(diagnostic_entity_ids["sd_card_total"]).state, "128")
+                self.assertEqual(hass.states.get(diagnostic_entity_ids["sd_card_used"]).state, "32")
+                self.assertEqual(hass.states.get(diagnostic_entity_ids["sd_card_free"]).state, "unavailable")
+                self.assertNotIn(
+                    "unit_of_measurement", hass.states.get(diagnostic_entity_ids["sd_card_total"]).attributes,
+                )
                 c400_id = "camera.other_camera_direct"
                 self.assertEqual(hass.states.get("camera.unknown_camera_direct").state, "unavailable")
                 self.assertEqual(hass.states.get(c400_id).attributes["requested_video_profile"], 3)
                 self.assertEqual(starts, [])
                 hls = await async_request_stream(hass, "camera.xiaomi_c201_direct", "hls")
                 url = f"http://127.0.0.1:{port}{hls}"
-                async with ClientSession() as client:
+                async with create_client_session() as client:
                     async with client.get(url, timeout=15) as response:
                         self.assertEqual(response.status, 200)
                         playlist = await response.text()
@@ -359,12 +421,6 @@ stream:
                 self.assertEqual(moves, [1])
                 self.assertEqual(starts, [("xiaomi.camera.c201", 0)])
                 self.assertEqual(audio_starts, [False])
-                registry = entity_registry.async_get(hass)
-                camera_id = "camera.xiaomi_c201_direct"
-                device_id = registry.async_get(camera_id).device_id
-                self.assertIsNotNone(device_id)
-                self.assertEqual(registry.async_get("button.xiaomi_c201_direct_ptz_left").device_id, device_id)
-
                 async def submit_reauth(user_id):
                     pending = await flow.async_init(entry.domain, context={
                         "source": "reauth", "entry_id": entry.entry_id,
@@ -378,6 +434,7 @@ stream:
 
                 with patch.object(xiaomi_direct_pilot, "create_account", return_value=SimpleNamespace(
                     devices=AsyncMock(return_value={}),
+                    read_c201_settings=AsyncMock(return_value={"night_shot": 2, "indicator_light": False}),
                 )):
                     self.assertEqual((await submit_reauth("wrong-user"))["reason"], "wrong_account")
                     self.assertEqual(entry.data["account_pass_token"], "mock-pass")
@@ -400,7 +457,7 @@ stream:
                     self.assertEqual(hass.states.get(c400_id).attributes["requested_video_profile"], 2)
                     self.assertEqual(starts, [("xiaomi.camera.c201", 0)])
                     c400 = get_camera_from_entity_id(hass, c400_id)
-                    async with ClientSession() as client, client.get(await c400.stream_source(), timeout=5) as stream:
+                    async with create_client_session() as client, client.get(await c400.stream_source(), timeout=5) as stream:
                         self.assertEqual(await stream.content.readexactly(1), b"\x47")
                     self.assertEqual(starts, [("xiaomi.camera.c201", 0), ("chuangmi.camera.039a04", 2)])
 
@@ -450,6 +507,8 @@ stream:
                 self.assertEqual(starts[-1], ("chuangmi.camera.079ae2", 0))
 
                 route_state["available"] = False
+                camera_inventory.append({"model": "test.camera.new", "did": "mock-new",
+                                         "name": "New camera", "localip": "192.168.99.6"})
                 with (
                     patch.object(xiaomi_direct_pilot, "create_account", return_value=account),
                     patch.object(xiaomi_direct_pilot, "resolve_cameras", resolve),
@@ -463,6 +522,10 @@ stream:
                     self.assertFalse(unavailable.available)
                     self.assertIsNone(await unavailable.stream_source())
                     self.assertEqual(hass.states.get(camera_id).state, "unavailable")
+                    new_camera = hass.states.get("camera.new_camera_direct")
+                    self.assertEqual(new_camera.attributes["direct_status"], "model_profile_pending")
+                    with self.assertRaisesRegex(HomeAssistantError, "Camera not found"):
+                        get_camera_from_entity_id(hass, "camera.unknown_camera_direct")
                     self.assertEqual(registry.async_get(camera_id).entity_id, camera_id)
                     self.assertEqual(registry.async_get(camera_id).device_id, device_id)
 
@@ -476,7 +539,7 @@ stream:
                     self.assertEqual(current["source_ip"], "192.168.99.8")
                     self.assertEqual(registry.async_get(camera_id).entity_id, camera_id)
                     self.assertEqual(registry.async_get(camera_id).device_id, device_id)
-                    async with ClientSession() as client, client.get(
+                    async with create_client_session() as client, client.get(
                         await restored.stream_source(), timeout=5,
                     ) as stream:
                         self.assertEqual(await stream.content.readexactly(1), b"\x47")

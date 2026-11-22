@@ -4,10 +4,25 @@ import unittest
 
 from custom_components.xiaomi_direct_pilot.button import PTZ_MODELS
 from custom_components.xiaomi_direct_pilot.const import C701_MODEL
-from custom_components.xiaomi_direct_pilot.inventory import QUALITY, merge_refreshed_camera
+from custom_components.xiaomi_direct_pilot.inventory import QUALITY, account_cameras, excluded_camera_ids, merge_refreshed_camera
 
 
 class DirectCameraInventoryTest(unittest.TestCase):
+    def test_new_model_is_in_inventory_without_a_transport_profile(self):
+        cameras = account_cameras({"list": [
+            {"model": "test.camera.new", "did": "new", "name": "New camera"},
+            {"model": "test.plug.new", "did": "plug"},
+        ]})
+        self.assertEqual(list(cameras), ["new"])
+        self.assertNotIn(cameras["new"]["model"], QUALITY)
+
+    def test_explicit_exclusions_survive_inventory_changes(self):
+        saved = [{"device_id": "selected"}, {"device_id": "excluded"}]
+        excluded = excluded_camera_ids(saved, {"camera_ids": ["selected"]})
+        self.assertEqual(excluded, {"excluded"})
+        refreshed = [{"device_id": "selected"}, {"device_id": "new"}]
+        self.assertEqual(excluded_camera_ids(refreshed, {"excluded_camera_ids": sorted(excluded)}), excluded)
+
     def test_c701_has_a_baseline_stream_profile_and_ptz(self):
         self.assertEqual(QUALITY[C701_MODEL], 0)
         self.assertIn(C701_MODEL, PTZ_MODELS)
