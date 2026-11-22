@@ -20,4 +20,9 @@ class GatewayEntity(CoordinatorEntity):
 
     @property
     def available(self):
-        return self.coordinator.last_update_success and self.did in self.coordinator.data
+        camera = self.coordinator.data.get(self.did, {})
+        return (
+            self.coordinator.last_update_success
+            and self.did in self.coordinator.data
+            and camera.get("available", True)
+        )

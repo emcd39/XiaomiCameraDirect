@@ -68,6 +68,8 @@ class GatewayCamera(GatewayEntity, Camera):
         camera = self.coordinator.data.get(self.did)
         if not camera:
             return None
+        if not camera.get("available", True):
+            return None
         if camera.get("on_demand_stream"):
             if _provider_probe_camera.get() is self:
                 return None
@@ -104,6 +106,11 @@ class GatewayCamera(GatewayEntity, Camera):
             if displayed_support["features"]:
                 attributes["support"] = displayed_support
         return attributes
+
+    @property
+    def capability_attributes(self) -> dict[str, object] | None:
+        status = self.coordinator.data.get(self.did, {}).get("direct_status")
+        return {"direct_status": status} if isinstance(status, str) else None
 
     async def async_camera_image(self, width=None, height=None) -> bytes | None:
         source = await self.stream_source()

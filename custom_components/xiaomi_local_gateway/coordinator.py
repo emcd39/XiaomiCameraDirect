@@ -6,12 +6,13 @@ import logging
 from homeassistant.core import callback
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from .api import GatewayClient, GatewayError
+from .api import GatewayError
+from .backend import CameraBackend, CameraReadBackend
 
 LOGGER = logging.getLogger(__name__)
 
 class GatewayCoordinator(DataUpdateCoordinator[dict[str, dict]]):
-    def __init__(self, hass, entry, client: GatewayClient) -> None:
+    def __init__(self, hass, entry, client: CameraBackend) -> None:
         super().__init__(hass, LOGGER, name="Xiaomi Local Gateway", config_entry=entry,
                          update_interval=timedelta(seconds=30), always_update=False)
         self.client = client
@@ -29,7 +30,7 @@ class GatewayCoordinator(DataUpdateCoordinator[dict[str, dict]]):
 class CameraSettingsCoordinator(DataUpdateCoordinator[dict[str, dict | None]]):
     """Poll the C201's fixed read-only settings separately from inventory."""
 
-    def __init__(self, hass, entry, client: GatewayClient, cameras: GatewayCoordinator) -> None:
+    def __init__(self, hass, entry, client: CameraReadBackend, cameras: GatewayCoordinator) -> None:
         super().__init__(hass, LOGGER, name="Xiaomi Camera Settings", config_entry=entry,
                          update_interval=timedelta(minutes=5))
         self.client = client
@@ -51,7 +52,7 @@ class CameraSettingsCoordinator(DataUpdateCoordinator[dict[str, dict | None]]):
 class CameraStorageCoordinator(DataUpdateCoordinator[dict[str, dict | None]]):
     """Poll raw C201 SD properties without guessing their units or meaning."""
 
-    def __init__(self, hass, entry, client: GatewayClient, cameras: GatewayCoordinator) -> None:
+    def __init__(self, hass, entry, client: CameraReadBackend, cameras: GatewayCoordinator) -> None:
         super().__init__(hass, LOGGER, name="Xiaomi Camera Storage", config_entry=entry,
                          update_interval=timedelta(minutes=5))
         self.client = client
@@ -122,7 +123,7 @@ class CameraStorageCoordinator(DataUpdateCoordinator[dict[str, dict | None]]):
 class CameraSettingsSupport:
     """Discover optional read-only feature flags in one background info poll."""
 
-    def __init__(self, hass, entry, client: GatewayClient, cameras: GatewayCoordinator) -> None:
+    def __init__(self, hass, entry, client: CameraReadBackend, cameras: GatewayCoordinator) -> None:
         self.hass = hass
         self.entry = entry
         self.client = client
