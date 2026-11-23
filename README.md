@@ -111,8 +111,8 @@ curl -X POST -H "Authorization: Bearer YOUR_TOKEN" -H "Content-Type: application
 ```
 
 6. Copy `legacy/custom_components/xiaomi_local_gateway` into the
-   HA `config/custom_components` folder. Restart HA and add the **Xiaomi Local
-   Gateway** integration from Settings → Devices & Services. Enter the gateway
+   HA `config/custom_components` folder. Restart HA and add the **Xiaomi Gateway
+   (Legacy)** integration from Settings → Devices & Services. Enter the gateway
    LAN URL and token. The integration provides camera entities (RTSP) and PTZ
    directional buttons. Dashboard live view depends on codec compatibility.
 7. Merge the generated Frigate snippet with your current config. Leave the

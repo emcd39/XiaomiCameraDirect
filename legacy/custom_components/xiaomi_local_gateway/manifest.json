@@ -1,6 +1,6 @@
 {
   "domain": "xiaomi_local_gateway",
-  "name": "Xiaomi Local Gateway",
+  "name": "Xiaomi Gateway (Legacy)",
   "version": "0.1.0",
   "documentation": "https://github.com/moukas/XiaomiCameraDirect#xiaomi-local-gateway",
   "issue_tracker": "https://github.com/moukas/XiaomiCameraDirect/issues",

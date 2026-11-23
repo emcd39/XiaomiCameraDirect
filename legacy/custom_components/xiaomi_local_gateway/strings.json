@@ -1,9 +1,9 @@
 {
-  "title": "Xiaomi Local Gateway",
+  "title": "Xiaomi Gateway (Legacy)",
   "config": {
     "step": {
       "user": {
-        "title": "Connect to Xiaomi Local Gateway",
+        "title": "Connect to the legacy Xiaomi gateway",
         "description": "The gateway runs on your LAN. Enter its address and access token.",
         "data": {"url": "Gateway URL", "token": "API token"}
       },

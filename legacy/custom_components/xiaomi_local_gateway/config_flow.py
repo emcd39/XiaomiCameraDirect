@@ -7,7 +7,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.selector import TextSelector, TextSelectorConfig, TextSelectorType
 from .api import GatewayClient, GatewayError
-from .const import CONF_TOKEN, CONF_URL, DOMAIN
+from .const import CONF_TOKEN, CONF_URL, DOMAIN, NAME
 
 LOGGER = logging.getLogger(__name__)
 _REGIONS = ("de", "cn", "i2", "ru", "sg", "us")
@@ -166,7 +166,7 @@ class XiaomiLocalGatewayConfigFlow(ConfigFlow, domain=DOMAIN):
                 else:
                     await self.async_set_unique_id(url.lower())
                     self._abort_if_unique_id_configured()
-                    return self.async_create_entry(title="Xiaomi Local Gateway",data={
+                    return self.async_create_entry(title=NAME, data={
                         CONF_URL: url, CONF_TOKEN: user_input[CONF_TOKEN],
                     })
         return self.async_show_form(

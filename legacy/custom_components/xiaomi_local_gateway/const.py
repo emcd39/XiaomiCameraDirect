@@ -1,4 +1,5 @@
 """Shared constants for Xiaomi Local Gateway."""
 DOMAIN = "xiaomi_local_gateway"
+NAME = "Xiaomi Gateway (Legacy)"
 CONF_URL = "url"
 CONF_TOKEN = "token"
