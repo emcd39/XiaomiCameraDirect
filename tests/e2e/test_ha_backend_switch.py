@@ -20,6 +20,11 @@ import custom_components
 from custom_components.xiaomi_direct_pilot.xiaomi_direct import account as xiaomi_account
 
 
+class HATestResolver(ThreadedResolver):
+    async def real_close(self):
+        await self.close()
+
+
 class DirectFake:
     def __init__(self):
         self.closed = AsyncMock()
@@ -113,7 +118,7 @@ class HABackendSwitchTest(unittest.IsolatedAsyncioTestCase):
             integration_path.start()
             self.addCleanup(integration_path.stop)
             resolver = patch.object(
-                aiohttp_client, "_async_make_resolver", side_effect=lambda _hass: ThreadedResolver(),
+                aiohttp_client, "_async_make_resolver", side_effect=lambda _hass: HATestResolver(),
             )
             resolver.start()
             self.addCleanup(resolver.stop)
