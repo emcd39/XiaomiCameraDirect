@@ -10,9 +10,10 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from aiohttp.resolver import ThreadedResolver
 from homeassistant.bootstrap import async_setup_hass
 from homeassistant.components.camera.helper import get_camera_from_entity_id
-from homeassistant.helpers import device_registry, entity_registry
+from homeassistant.helpers import aiohttp_client, device_registry, entity_registry
 from homeassistant.runner import RuntimeConfig
 
 import custom_components
@@ -111,6 +112,11 @@ class HABackendSwitchTest(unittest.IsolatedAsyncioTestCase):
             )
             integration_path.start()
             self.addCleanup(integration_path.stop)
+            resolver = patch.object(
+                aiohttp_client, "_async_make_resolver", side_effect=lambda _hass: ThreadedResolver(),
+            )
+            resolver.start()
+            self.addCleanup(resolver.stop)
             (config / "configuration.yaml").write_text("stream:\n  segment_duration: 2\n", encoding="utf-8")
 
             root_logger = logging.getLogger()

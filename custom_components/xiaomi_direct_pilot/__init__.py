@@ -8,6 +8,7 @@ from aiohttp import ClientSession
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP, Platform
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import config_validation as cv
 from .button import PTZ_MODELS, PTZControl
 from .const import C201_MODEL, DOMAIN, NAME
 from .inventory import account_cameras, create_account, excluded_camera_ids, merge_refreshed_camera, resolve_cameras
@@ -17,6 +18,7 @@ from .xiaomi_direct.talkback_api import async_stop_talkback_for_sources, registe
 
 
 PLATFORMS = [Platform.CAMERA, Platform.BUTTON, Platform.SENSOR, Platform.BINARY_SENSOR]
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 _LOGGER = logging.getLogger(__name__)
 
 
