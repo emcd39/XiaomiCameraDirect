@@ -12,9 +12,9 @@ from homeassistant.exceptions import HomeAssistantError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from custom_components.xiaomi_local_gateway.camera import GatewayCamera
-from custom_components.xiaomi_local_gateway.api import GatewayError, GatewayPTZSessionUnavailable
-from custom_components.xiaomi_local_gateway.button import PTZButton
+from legacy.custom_components.xiaomi_local_gateway.camera import GatewayCamera
+from legacy.custom_components.xiaomi_local_gateway.api import GatewayError, GatewayPTZSessionUnavailable
+from legacy.custom_components.xiaomi_local_gateway.button import PTZButton
 
 
 class CameraEntityTests(unittest.TestCase):

@@ -49,7 +49,7 @@ Povinně zachovat: kliknutí nese konkrétní camera ID, zastaralý výběr vrac
 - [SD návrh](../xiaomi-diagnostic-console/docs/C201_SD_READONLY_DESIGN.md): stále platné požadavky na čas, kanál a rozlišení prázdného indexu.
 - `internal/xiaomi/provider.go`, `internal/backend/provider.go`, `internal/model/camera.go`, `internal/httpapi/api.go`: produktová hranice.
 - `internal/xiaomi/protocol/{cloud,miss,stream,recordings,lan}`: nejnižší vrstva; existující raw helper není veřejné API.
-- `internal/streamrtsp/relay.go`, `custom_components/xiaomi_local_gateway/`, `xiaomi-diagnostic-console/internal/console/`: restream a klienti.
+- `internal/streamrtsp/relay.go`, `legacy/custom_components/xiaomi_local_gateway/`, `xiaomi-diagnostic-console/internal/console/`: restream a klienti.
 - `scripts/test-local.ps1`, `tests/e2e/test_ha.py`, `tests/test_camera_settings.py`, `.github/workflows/ci.yaml`: ověřovací prostředí. Root CI zatím nezahrnuje celý HA E2E ani všechny testy konzole.
 
 ## 3. Co se smí označovat jako lokální a podporované
@@ -256,7 +256,7 @@ Společný postup každé karty: doložit protokol → fixture/parser → provid
 
 **Závislost:** doložená modelová sémantika, A04. **Rozsah:** profil, state machine, cache/snapshot/recording, HA.
 
-- C201 `2.1 Switch Status` není dosud důkaz fyzické závěrky. Rozlišit fyzický kryt, firmware privacy, vypnutí streamu a pouze skrytí UI.
+- Fyzické zakrytí uvádí Xiaomi pro C201 i C701. C201 má diagnostický odečet `2.1 Switch Status` v HA. Při fyzické přejímce jej porovnat se skutečnou polohou objektivu po použití režimu Xiaomi Home. Rozlišit fyzický kryt, stav firmwaru, vypnutí streamu a skrytí UI. [Přehled podle modelů](HA-CAMERA-CAPABILITIES.md#fyzické-zakrytí-objektivu).
 - Teprve doložená vlastnost/akce smí mít ovládací prvek. Při aktivaci zastavit publikaci obrazu, audia, záznamů a invalidovat cache; testovat závod s běžícím snapshotem/fetch a reconnectem. Nenabízet vypnutí UI jako ochranu před uploadem kamery na cloud.
 - Zachovat původní stav, jednorázový pokus a návrat. Živě ověřit, zda kamera opravdu zavře čočku nebo ukončí tok podle deklarované schopnosti.
 

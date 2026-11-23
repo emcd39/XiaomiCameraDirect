@@ -214,7 +214,7 @@ Původní stav z 2026-11-12 (bez dostupného inventáře) byl nahrazen testem p�
 - Průchod zdrojovým kódem a dokumentací (`custom_components`, `internal/xiaomi/protocol`, `cmd`, Go moduly a F08 plán) nenašel implementovaný MQTT consumer, lokální MIoT/CS2 event subscription ani ONVIF event subscription. Go ONVIF cesta v tomto repozitáři je použita pro ovládání/PTZ, ne pro odběr pohybových notifikací. MIoT `motion_detection_enabled` je pouze konfigurační vlastnost a testy ji takto i popisují.
 - Gateway má `GET /v1/frigate/config`, který pouze vygeneruje RTSP/ONVIF konfiguraci pro existující Frigate; neodebírá Frigate MQTT události a nepublikuje HA pohybové události. `docs/ROADMAP.md` už navrhuje Frigate MQTT jako jedinou cestu, ale jde zatím o plán, nikoli hotovou funkci.
 - Pro živou přejímku stále chybí broker/NVR/Frigate uživatele a kontrolovaný pohyb, který propojí skutečný Frigate camera topic s konkrétní fyzickou kamerou; její lokální datová trasa navíc čeká na A03. Žádný custom event adaptér se nepřidával. Headless MQTT kontrakt a mapování generovaných camera ID na topics jsou doplněny v navazující části níže; další krok je až živá kontrola existující Frigate integrace/brokeru, nikoli opakování obecné MQTT fixture.
-- Zdroje: [F08 plán](LOCAL-CAMERA-HANDOFF.md), [roadmapa Frigate MQTT](ROADMAP.md), [Frigate config route](../internal/httpapi/api.go), [MIoT konfigurační senzory](../custom_components/xiaomi_local_gateway/binary_sensor.py).
+- Zdroje: [F08 plán](LOCAL-CAMERA-HANDOFF.md), [roadmapa Frigate MQTT](ROADMAP.md), [Frigate config route](../internal/httpapi/api.go), [MIoT konfigurační senzory](../legacy/custom_components/xiaomi_local_gateway/binary_sensor.py).
 
 ### F05 follow-up: načtení SD snapshotu po návratu kamery, 2026-11-13
 

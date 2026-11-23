@@ -4,10 +4,14 @@ Xiaomi cameras in Home Assistant with video and supported controls over the
 local network. Home Assistant uses the Xiaomi account for sign-in, inventory,
 and the keys needed to open a new local camera session.
 
-## Direct setup in Home Assistant
+## Install in Home Assistant
 
-1. Copy `custom_components/xiaomi_direct_pilot` into the Home Assistant
-   configuration directory under `custom_components` and restart HA.
+Requires Home Assistant Core 2026.10.4 or later and network access from Home
+Assistant to the cameras.
+
+1. Open **HACS → ⋮ → Custom repositories**, add
+   `https://github.com/moukas/XiaomiCameraDirect` as **Integration**, then
+   download **Xiaomi Camera Direct** and restart Home Assistant.
 2. Open **Settings → Devices & services → Add integration** and choose
    **Xiaomi Camera Direct**. Select your Xiaomi Home region and approve
    access to the account.
@@ -18,10 +22,17 @@ and the keys needed to open a new local camera session.
    For a C400 in the European region, select the camera under **C400 cameras
    to stream at lower resolution** to reduce bandwidth. Saving reloads the
    account entry and applies the selected profile when the stream next opens.
-   **C201 microphone (experimental)** enables audio on the selected C201
-   streams in the European region. It defaults to off. If enabled, a supported
-   microphone track is available in native HA playback and can be included in
-   recordings. The audio implementation accepts Opus, G.711 A-law and μ-law.
+   The integration's experimental microphone options are off by default. See
+   the [model capability matrix](docs/HA-CAMERA-CAPABILITIES.md) for audio and
+   other features verified on each model.
+
+For a manual installation, copy the complete
+`custom_components/xiaomi_direct_pilot` directory into the Home Assistant
+configuration directory under `custom_components`, restart and start at step 2.
+Existing direct installations use the same integration domain and config entries.
+The optional dashboard card is bundled with the integration. The example
+[WebRTC dashboard](docs/examples/lovelace-xiaomi-direct.json) also needs
+[WebRTC Camera](https://github.com/AlexxIT/WebRTC) and entity IDs from your HA.
 
 The direct integration runs inside HA Core. The Go gateway is available
 separately for diagnostics, reference testing and standalone deployments.
@@ -45,7 +56,7 @@ backends will be tested.
 Xiaomi cameras ── LAN MISS/CS2 ── patched go2rtc + xiaomi-onvif (external)
                                       │ RTSP    │ ONVIF
                                       │         └── Gateway Go REST API
-                                      │                  └── HACS PTZ buttons
+                                      │                  └── HA PTZ buttons
                                       ├── Home Assistant (camera stream)
                                       └── Frigate (record/detect/ONVIF PTZ)
 ```
@@ -99,8 +110,7 @@ curl -X POST -H "Authorization: Bearer YOUR_TOKEN" -H "Content-Type: application
   -d '{"direction":"left"}' http://127.0.0.1:8099/v1/cameras/garden/ptz/step
 ```
 
-6. In HACS, add this directory as a custom integration repo **once you publish
-   the repository**, or copy `custom_components/xiaomi_local_gateway` into the
+6. Copy `legacy/custom_components/xiaomi_local_gateway` into the
    HA `config/custom_components` folder. Restart HA and add the **Xiaomi Local
    Gateway** integration from Settings → Devices & Services. Enter the gateway
    LAN URL and token. The integration provides camera entities (RTSP) and PTZ
@@ -122,14 +132,6 @@ curl -X POST -H "Authorization: Bearer YOUR_TOKEN" -H "Content-Type: application
   proxy when crossing network trust boundaries.
 - Upstream xiaomi-onvif is in beta; pin versions, test before update.
 
-## Repository publication
-
-This ZIP contains an initialized **local Git repository**, not a published GitHub
-repository. The module/import path and manifest links currently use the
-placeholder owner `xiaomi-local-gateway` and **must be changed to your real
-GitHub owner/repository** before publishing. No GitHub repository is created
-by this package. See [docs/PUBLISH.md](docs/PUBLISH.md).
-
 ## Development
 
 On Windows, run `./scripts/test-camera-quick.ps1` to compile and test inside a
@@ -142,10 +144,11 @@ disposable WSLc Linux container. Build the deployment image with
 go test -race ./...
 go vet ./...
 go run ./cmd/gateway -check-config -config config.example.json
-python -m compileall -q custom_components
+python -m compileall -q custom_components legacy/custom_components
 ```
 
-Roadmap: [docs/ROADMAP.md](docs/ROADMAP.md), architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+See the [roadmap](docs/ROADMAP.md), [architecture](docs/ARCHITECTURE.md), and
+[HACS publishing notes](docs/PUBLISH.md).
 
 ## External references
 

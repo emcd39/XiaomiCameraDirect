@@ -297,7 +297,7 @@ try {
 
     $fixture = Join-Path $RepoRoot 'tests/fixtures/home-assistant/configuration.yaml'
     Copy-Item -LiteralPath $fixture -Destination (Join-Path $HaConfig 'configuration.yaml')
-    $sourceIntegration = Join-Path $RepoRoot 'custom_components/xiaomi_local_gateway'
+    $sourceIntegration = Join-Path $RepoRoot 'legacy/custom_components/xiaomi_local_gateway'
     $targetIntegration = Join-Path $HaConfig 'custom_components/xiaomi_local_gateway'
     New-Item -ItemType Directory -Force -Path $targetIntegration, (Join-Path $HaConfig 'tests/e2e') | Out-Null
     foreach ($file in (Get-ChildItem -LiteralPath $sourceIntegration -File -Recurse)) {

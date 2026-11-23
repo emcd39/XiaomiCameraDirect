@@ -1,5 +1,6 @@
 """Exercise backend switching on one disposable HA config entry."""
 
+from importlib import import_module
 import logging
 import os
 from pathlib import Path
@@ -14,8 +15,7 @@ from homeassistant.components.camera.helper import get_camera_from_entity_id
 from homeassistant.helpers import device_registry, entity_registry
 from homeassistant.runner import RuntimeConfig
 
-from custom_components.xiaomi_local_gateway import api as gateway_api
-from custom_components.xiaomi_local_gateway import direct_backend
+import custom_components
 from custom_components.xiaomi_direct_pilot.xiaomi_direct import account as xiaomi_account
 
 
@@ -94,9 +94,23 @@ class HABackendSwitchTest(unittest.IsolatedAsyncioTestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             config = Path(temporary)
-            root = Path(__file__).parents[2] / "custom_components"
-            shutil.copytree(root / "xiaomi_local_gateway", config / "custom_components/xiaomi_local_gateway")
-            shutil.copytree(root / "xiaomi_direct_pilot", config / "custom_components/xiaomi_direct_pilot")
+            root = Path(__file__).parents[2]
+            shutil.copytree(
+                root / "legacy/custom_components/xiaomi_local_gateway",
+                config / "custom_components/xiaomi_local_gateway",
+            )
+            shutil.copytree(
+                root / "custom_components/xiaomi_direct_pilot",
+                config / "custom_components/xiaomi_direct_pilot",
+            )
+            # The test process has already imported custom_components from the
+            # checkout. Include the disposable config's manually installed adapter.
+            integration_path = patch.object(
+                custom_components, "__path__",
+                [*custom_components.__path__, str(config / "custom_components")],
+            )
+            integration_path.start()
+            self.addCleanup(integration_path.stop)
             (config / "configuration.yaml").write_text("stream:\n  segment_duration: 2\n", encoding="utf-8")
 
             root_logger = logging.getLogger()
@@ -113,6 +127,7 @@ class HABackendSwitchTest(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNotNone(hass)
                 await hass.async_start()
                 await hass.async_block_till_done()
+                gateway_api = import_module("custom_components.xiaomi_local_gateway.api")
                 with (
                     patch.object(gateway_api.GatewayClient, "cameras", AsyncMock(return_value=[camera])),
                     patch.object(gateway_api.GatewayClient, "camera_stream", AsyncMock(return_value=gateway_url)) as gateway_stream,

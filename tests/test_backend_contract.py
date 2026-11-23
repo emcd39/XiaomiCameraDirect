@@ -3,12 +3,12 @@
 import unittest
 from unittest.mock import AsyncMock
 
-from custom_components.xiaomi_local_gateway.backend import (
+from legacy.custom_components.xiaomi_local_gateway.backend import (
     CameraBackend,
     CameraReadBackend,
     GatewayBackendAdapter,
 )
-from custom_components.xiaomi_local_gateway.direct_backend import DirectBackendAdapter
+from legacy.custom_components.xiaomi_local_gateway.direct_backend import DirectBackendAdapter
 
 
 class GatewayBackendContractTest(unittest.IsolatedAsyncioTestCase):

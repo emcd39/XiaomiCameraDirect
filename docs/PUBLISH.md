@@ -1,24 +1,20 @@
-# Publishing a new GitHub repository
+# Publishing Xiaomi Camera Direct for HACS
 
-The repo inside the ZIP has a single initial commit, but no remote origin.
+HACS installs the integration in `custom_components/xiaomi_direct_pilot` from
+[moukas/XiaomiCameraDirect](https://github.com/moukas/XiaomiCameraDirect).
+Users add the repository as a custom **Integration**. The internal domain is
+also the installed folder name and identifies existing HA config entries.
 
-1. Create a new **private** empty GitHub repository named `xiaomi-local-gateway`
-   under your own account or organization (do not initialize with a README).
-2. Replace placeholder `github.com/xiaomi-local-gateway/xiaomi-local-gateway`
-   in `go.mod`, every Go import, and the `manifest.json` documentation/issue
-   URLs with the actual repository URL.
-3. Run `go mod tidy && gofmt -w cmd/ internal/ && go test ./...`.
-4. Commit the path changes and publish:
+The root `hacs.json` declares the minimum Home Assistant version. Set the
+integration version in `custom_components/xiaomi_direct_pilot/manifest.json`
+when publishing an update. Keep translations, frontend resources and brand
+images within the integration folder.
 
-```bash
-git add .
-git commit -m "chore: set GitHub module path"
-git branch -M main
-git remote add origin git@github.com:YOUR_OWNER/xiaomi-local-gateway.git
-git push -u origin main
-```
+Run the relevant checks in the [test guide](../tests/README.md). GitHub Actions
+validates the repository with HACS and Hassfest. HACS installs from the default
+branch while there are no GitHub Releases. To publish a versioned release,
+create a GitHub Release with a tag matching the manifest version.
 
-For HACS, install it as a custom **Integration** repository after publishing.
-Until then, manually copy `custom_components/xiaomi_local_gateway` into HA.
-Never commit `.env` or `config.json`, and do not make the repo public until
-secrets/URLs have been reviewed.
+The standalone Go gateway and the manually installed
+`legacy/custom_components/xiaomi_local_gateway` adapter share this repository.
+The [README](../README.md#xiaomi-local-gateway) describes their installation.

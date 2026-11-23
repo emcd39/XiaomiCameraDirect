@@ -1,11 +1,13 @@
 {
   "domain": "xiaomi_direct_pilot",
   "name": "Xiaomi Camera Direct",
-  "version": "0.3.5",
-  "documentation": "https://github.com/moukas/xiaomi-local-gateway/blob/master/README.md",
-  "codeowners": [],
+  "codeowners": ["@moukas"],
   "config_flow": true,
   "dependencies": ["http", "lovelace", "network", "stream"],
+  "documentation": "https://github.com/moukas/XiaomiCameraDirect",
+  "integration_type": "hub",
   "iot_class": "local_push",
-  "requirements": ["cryptography==50.0.1", "PyNaCl==1.6.2"]
+  "issue_tracker": "https://github.com/moukas/XiaomiCameraDirect/issues",
+  "requirements": ["cryptography==50.0.1", "PyNaCl==1.6.2"],
+  "version": "0.3.6"
 }

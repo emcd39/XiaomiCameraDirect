@@ -1,5 +1,4 @@
 {
-  "name": "Xiaomi Local Gateway",
-  "content_in_root": false,
-  "render_readme": true
+  "name": "Xiaomi Camera Direct",
+  "homeassistant": "2026.10.4"
 }

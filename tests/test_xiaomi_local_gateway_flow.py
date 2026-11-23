@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from custom_components.xiaomi_local_gateway import config_flow
+from legacy.custom_components.xiaomi_local_gateway import config_flow
 from custom_components.xiaomi_direct_pilot.xiaomi_direct.account import AccountChallenge, AccountError
 
 

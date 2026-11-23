@@ -6,10 +6,11 @@ import json
 from pathlib import Path
 import sys
 
-from aiohttp import ClientSession, web
+from aiohttp import ClientSession, TCPConnector, web
+from aiohttp.resolver import ThreadedResolver
 from aiohttp.test_utils import TestServer
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "custom_components"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "legacy" / "custom_components"))
 
 from xiaomi_local_gateway.api import (
     GatewayClient,
@@ -75,7 +76,7 @@ class GatewayClientTests(unittest.IsolatedAsyncioTestCase):
         app.router.add_get("/v2/cameras/{camera_id}/snapshot", snapshot)
         self.server = TestServer(app)
         await self.server.start_server()
-        self.session = ClientSession()
+        self.session = ClientSession(connector=TCPConnector(resolver=ThreadedResolver()))
         self.client = GatewayClient(self.session, str(self.server.make_url("")), "test-token")
 
     async def asyncTearDown(self) -> None:

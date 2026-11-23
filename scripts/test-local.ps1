@@ -138,7 +138,7 @@ try {
     $haFixture = Join-Path $RepoRoot 'tests/fixtures/home-assistant/configuration.yaml'
     Copy-Item -LiteralPath $haFixture -Destination (Join-Path $HaConfig 'configuration.yaml')
     New-Item -ItemType Directory -Force -Path (Join-Path $HaConfig 'custom_components'), (Join-Path $HaConfig 'tests/e2e') | Out-Null
-    $sourceIntegrationRoot = Join-Path $RepoRoot 'custom_components/xiaomi_local_gateway'
+    $sourceIntegrationRoot = Join-Path $RepoRoot 'legacy/custom_components/xiaomi_local_gateway'
     $integrationRoot = Join-Path $HaConfig 'custom_components/xiaomi_local_gateway'
     New-Item -ItemType Directory -Force -Path $integrationRoot | Out-Null
     $sourceFiles = Get-ChildItem -LiteralPath $sourceIntegrationRoot -File -Recurse | Where-Object {
@@ -173,7 +173,7 @@ try {
 
     Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/fixtures/gateway-mock.json') -Destination (Join-Path $GatewayDir 'config.json')
     $gatewayDigest = Get-SourceDigest $RepoRoot @('Dockerfile', 'go.mod', 'go.sum', 'cmd', 'internal')
-    $componentDigest = Get-SourceDigest $RepoRoot @('custom_components/xiaomi_local_gateway')
+    $componentDigest = Get-SourceDigest $RepoRoot @('legacy/custom_components/xiaomi_local_gateway')
     $testDigest = Get-SourceDigest $RepoRoot @('tests')
     Write-Evidence "GATEWAY_SOURCE_SHA256=$gatewayDigest"
     Write-Evidence "HA_INTEGRATION_SOURCE_SHA256=$componentDigest"
@@ -280,7 +280,7 @@ try {
     $null = Invoke-HaPython 'Verify cameras recover after gateway restart' @('/config/tests/e2e/test_ha.py', 'wait-available')
     $null = Invoke-HaPython 'Verify late C201 settings capability in a loaded config entry' @('/config/tests/e2e/test_ha.py', 'late-settings')
 
-    $finalComponentDigest = Get-SourceDigest $RepoRoot @('custom_components/xiaomi_local_gateway')
+    $finalComponentDigest = Get-SourceDigest $RepoRoot @('legacy/custom_components/xiaomi_local_gateway')
     $finalGatewayDigest = Get-SourceDigest $RepoRoot @('Dockerfile', 'go.mod', 'go.sum', 'cmd', 'internal')
     $finalTestDigest = Get-SourceDigest $RepoRoot @('tests')
     if ($finalComponentDigest -ne $componentDigest -or $finalGatewayDigest -ne $gatewayDigest -or $finalTestDigest -ne $testDigest) {
