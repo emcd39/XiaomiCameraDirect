@@ -80,6 +80,12 @@ class XiaomiDirectCameraCard extends HTMLElement {
     const cameraConfig = { ...config };
     delete cameraConfig.type;
     delete cameraConfig.push_to_talk;
+    this._audioRequested = config.media?.split(",").some((track) => track.trim() === "audio");
+    if (this._audioRequested) {
+      // WebRTC Camera checks for audio at loadeddata. With MSE that can be
+      // before the browser decodes any audio, so keep its native toggle visible.
+      cameraConfig.style = `${config.style ?? ""}\n.ui .volume { display: block !important; }`;
+    }
     this._cameraConfig = cameraConfig;
 
     // Do not attach <webrtc-camera> until it is defined and configured.
@@ -132,7 +138,7 @@ class XiaomiDirectCameraCard extends HTMLElement {
     const video = this._volumeVideo;
     const volume = this._camera?.shadowRoot?.querySelector(".volume");
     if (!video) return;
-    this._volumeSlider.disabled = !this._camera.hasAudio;
+    this._volumeSlider.disabled = !this._audioRequested && !this._camera.hasAudio;
     this._volumeSlider.value = Math.round(video.volume * 100);
     // WebRTC Camera renders its icon after applying the initial muted setting.
     if (volume) volume.icon = video.muted ? "mdi:volume-mute" : "mdi:volume-high";
