@@ -30,6 +30,7 @@ _REQUEST = "/v2/device/miss_get_vendor"
 _DEVICE_LIST = "/v2/home/device_list_page"
 _MIOT_GET = "/miotspec/prop/get"
 _C201_DIAGNOSTICS = {
+    (2, 1): ("camera_enabled", None),
     (2, 3): ("night_shot", 255),
     (4, 1): ("indicator_light", None),
     (5, 1): ("motion_detection", None),

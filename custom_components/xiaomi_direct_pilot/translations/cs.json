@@ -61,7 +61,8 @@
       "indicator_light": { "name": "Kontrolka zapnutá" },
       "motion_detection": { "name": "Detekce pohybu zapnutá" },
       "human_detection": { "name": "Detekce osob zapnutá" },
-      "pet_detection": { "name": "Detekce zvířat zapnutá" }
+      "pet_detection": { "name": "Detekce zvířat zapnutá" },
+      "camera_enabled": { "name": "Nastavení zapnutí kamery" }
     }
   },
   "options": {

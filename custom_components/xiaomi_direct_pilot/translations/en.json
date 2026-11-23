@@ -61,7 +61,8 @@
       "indicator_light": { "name": "Indicator light enabled" },
       "motion_detection": { "name": "Motion detection enabled" },
       "human_detection": { "name": "Person detection enabled" },
-      "pet_detection": { "name": "Pet detection enabled" }
+      "pet_detection": { "name": "Pet detection enabled" },
+      "camera_enabled": { "name": "Camera enabled setting" }
     }
   },
   "options": {

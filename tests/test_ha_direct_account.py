@@ -189,6 +189,7 @@ class AccountTest(unittest.IsolatedAsyncioTestCase):
                 key = sha256(security + base64.b64decode(data["_nonce"])).digest()
                 decoded = account._rc4(key, base64.b64decode(data["data"]))
                 test.assertEqual(json.loads(decoded), {"params": [
+                    {"did": "c201", "siid": 2, "piid": 1},
                     {"did": "c201", "siid": 2, "piid": 3},
                     {"did": "c201", "siid": 4, "piid": 1},
                     {"did": "c201", "siid": 5, "piid": 1},
@@ -200,6 +201,8 @@ class AccountTest(unittest.IsolatedAsyncioTestCase):
                     {"did": "c201", "siid": 3, "piid": 4},
                 ]})
                 rows = [
+                    {"did": "c201", "siid": 2, "piid": 1, "code": 0, "value": False},
+                    {"did": "c201", "siid": 2, "piid": 1, "code": 0, "value": 1},
                     {"did": "c201", "siid": 2, "piid": 3, "code": 0, "value": 2},
                     {"did": "c201", "siid": 4, "piid": 1, "code": 0, "value": False},
                     {"did": "other", "siid": 2, "piid": 3, "code": 0, "value": 1},
@@ -219,7 +222,7 @@ class AccountTest(unittest.IsolatedAsyncioTestCase):
         client = account.XiaomiAccount(Client(), region="de", user_id="test", pass_token="mock")
         client._session = security, {}
         self.assertEqual(await client.read_c201_settings("c201"), {
-            "night_shot": 2, "indicator_light": False,
+            "camera_enabled": False, "night_shot": 2, "indicator_light": False,
             "sd_card_status": 0, "sd_card_total": 128,
             "motion_detection": True, "human_detection": False,
         })

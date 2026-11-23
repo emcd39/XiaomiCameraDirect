@@ -108,6 +108,9 @@ class DirectHaStreamTest(unittest.IsolatedAsyncioTestCase):
             async def stop_speaker(self):
                 self.stopped += 1
 
+            async def read_media(self, *, timeout=15):
+                return await self.read(timeout=timeout)
+
             async def read(self, *, timeout=15):
                 if not self.sent:
                     self.sent = True
@@ -130,7 +133,7 @@ class DirectHaStreamTest(unittest.IsolatedAsyncioTestCase):
         connection = SimpleNamespace(subscriptions={})
         sessions_store = sessions
         async with asyncio.timeout(3), source._subscribe() as queue:
-            await queue.get()
+            self.assertIsInstance(await queue.get(), VideoFrame)
             feed = source._feed
             old_token = await source.start_talkback()
             sessions_store[old_token] = (source, connection)
@@ -142,7 +145,7 @@ class DirectHaStreamTest(unittest.IsolatedAsyncioTestCase):
             feed.talkback_invalidate = invalidate
 
             disconnect.set()
-            await queue.get()
+            self.assertIsInstance(await queue.get(), VideoFrame)
             self.assertEqual(videos[0].stopped, 1)
             self.assertIsNone(feed.talkback_token)
             self.assertNotIn(old_token, sessions_store)
@@ -309,7 +312,7 @@ stream:
                     user_id="mock-user", pass_token="mock-pass",
                     devices=AsyncMock(return_value={"list": camera_inventory}),
                     read_c201_settings=AsyncMock(return_value={
-                        "night_shot": 2, "indicator_light": False,
+                        "camera_enabled": False, "night_shot": 2, "indicator_light": False,
                         "sd_card_status": 0, "sd_card_total": 128, "sd_card_used": 32,
                         "motion_detection": True, "human_detection": False,
                     }),
@@ -355,6 +358,7 @@ stream:
                 diagnostic_entity_ids = {}
                 for domain, key in (
                     ("sensor", "night_shot"), ("binary_sensor", "indicator_light"),
+                    ("binary_sensor", "camera_enabled"),
                     ("sensor", "sd_card_status"), ("sensor", "sd_card_total"),
                     ("sensor", "sd_card_free"), ("sensor", "sd_card_used"),
                     ("binary_sensor", "motion_detection"), ("binary_sensor", "human_detection"),
@@ -384,6 +388,7 @@ stream:
                 self.assertEqual(settings.data, account.read_c201_settings.return_value)
                 self.assertEqual(hass.states.get(diagnostic_entity_ids["night_shot"]).state, "Auto")
                 self.assertEqual(hass.states.get(diagnostic_entity_ids["indicator_light"]).state, "off")
+                self.assertEqual(hass.states.get(diagnostic_entity_ids["camera_enabled"]).state, "off")
                 self.assertEqual(hass.states.get(diagnostic_entity_ids["motion_detection"]).state, "on")
                 self.assertEqual(hass.states.get(diagnostic_entity_ids["human_detection"]).state, "off")
                 self.assertEqual(hass.states.get(diagnostic_entity_ids["pet_detection"]).state, "unavailable")

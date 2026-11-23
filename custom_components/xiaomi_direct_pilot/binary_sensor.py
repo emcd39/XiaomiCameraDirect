@@ -1,4 +1,4 @@
-"""C201 indicator light and detection configuration diagnostics."""
+"""C201 camera, indicator light and detection configuration diagnostics."""
 
 from homeassistant.components.binary_sensor import BinarySensorEntity
 
@@ -6,6 +6,7 @@ from .settings import C201SettingEntity
 
 
 _ICONS = {
+    "camera_enabled": "mdi:cctv",
     "indicator_light": "mdi:led-on",
     "motion_detection": "mdi:motion-sensor",
     "human_detection": "mdi:human",
