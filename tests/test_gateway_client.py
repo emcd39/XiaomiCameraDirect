@@ -3,14 +3,13 @@ from __future__ import annotations
 
 import unittest
 import json
-from pathlib import Path
-import sys
 
 from aiohttp import ClientSession, TCPConnector, web
 from aiohttp.resolver import ThreadedResolver
 from aiohttp.test_utils import TestServer
+from gateway_test_path import add_gateway_component_path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "legacy" / "custom_components"))
+add_gateway_component_path()
 
 from xiaomi_local_gateway.api import (
     GatewayClient,

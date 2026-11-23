@@ -2,19 +2,18 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-import sys
 import unittest
 from types import SimpleNamespace
 
 from homeassistant.components.camera import CameraEntityFeature
 from homeassistant.exceptions import HomeAssistantError
+from gateway_test_path import add_gateway_component_path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+add_gateway_component_path()
 
-from legacy.custom_components.xiaomi_local_gateway.camera import GatewayCamera
-from legacy.custom_components.xiaomi_local_gateway.api import GatewayError, GatewayPTZSessionUnavailable
-from legacy.custom_components.xiaomi_local_gateway.button import PTZButton
+from xiaomi_local_gateway.camera import GatewayCamera
+from xiaomi_local_gateway.api import GatewayError, GatewayPTZSessionUnavailable
+from xiaomi_local_gateway.button import PTZButton
 
 
 class CameraEntityTests(unittest.TestCase):

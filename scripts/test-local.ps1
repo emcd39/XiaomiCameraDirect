@@ -150,6 +150,7 @@ try {
         New-Item -ItemType Directory -Force -Path (Split-Path $destination -Parent) | Out-Null
         Copy-Item -LiteralPath $sourceFile.FullName -Destination $destination
     }
+    Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/gateway_test_path.py') -Destination (Join-Path $HaConfig 'tests/gateway_test_path.py')
     Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/test_gateway_client.py') -Destination (Join-Path $HaConfig 'tests/test_gateway_client.py')
     Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/test_camera_entity.py') -Destination (Join-Path $HaConfig 'tests/test_camera_entity.py')
     Copy-Item -LiteralPath (Join-Path $RepoRoot 'tests/test_camera_settings.py') -Destination (Join-Path $HaConfig 'tests/test_camera_settings.py')

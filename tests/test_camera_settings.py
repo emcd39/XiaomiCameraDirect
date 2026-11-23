@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-import sys
 from tempfile import TemporaryDirectory
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "custom_components"))
+from gateway_test_path import add_gateway_component_path
+
+add_gateway_component_path()
 
 from xiaomi_local_gateway import binary_sensor, sensor
 from xiaomi_local_gateway.api import GatewayError
