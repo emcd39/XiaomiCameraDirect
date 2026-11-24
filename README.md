@@ -9,9 +9,11 @@ and the keys needed to open a new local camera session.
 Requires Home Assistant Core 2026.10.4 or later and network access from Home
 Assistant to the cameras.
 
-1. Open **HACS → ⋮ → Custom repositories**, add
-   `https://github.com/moukas/XiaomiCameraDirect` as **Integration**, then
-   download **Xiaomi Camera Direct** and restart Home Assistant.
+1. Open **Settings → Marketplace**, search for **Xiaomi Camera Direct** and
+   select **Install**, then restart Home Assistant. The Marketplace is the
+   built-in HACS replacement since Home Assistant 2026.11; on older versions
+   add `https://github.com/moukas/XiaomiCameraDirect` under **HACS → ⋮ →
+   Custom repositories** instead.
 2. Open **Settings → Devices & services → Add integration** and choose
    **Xiaomi Camera Direct**. Select your Xiaomi Home region and approve
    access to the account.
@@ -34,8 +36,25 @@ For a manual installation, copy the complete
 configuration directory under `custom_components`, restart and start at step 2.
 Existing direct installations use the same integration domain and config entries.
 The optional dashboard card is bundled with the integration. The example
-[WebRTC dashboard](docs/examples/lovelace-xiaomi-direct.json) also needs
-[WebRTC Camera](https://github.com/AlexxIT/WebRTC) and entity IDs from your HA.
+[WebRTC dashboard](docs/examples/lovelace-xiaomi-direct.json) uses the native
+camera card plus PTZ buttons and needs no extra frontend card.
+
+### Stream latency
+
+The frontend receives the local session as low-latency HLS. Home Assistant
+keeps a one second part by default, so the picture trails the camera by about
+two seconds. Shorten the part to get closer to live:
+
+```yaml
+stream:
+  part_duration: 0.3
+```
+
+Restart Home Assistant afterwards and check that the media playlist shows
+`PART-TARGET=0.3`. Smaller parts cost more CPU and more HTTP requests; 0.2 is
+the smallest value the stream integration accepts. WebRTC is not used here:
+the loopback relay is MPEG-TS, and the built-in go2rtc provider only claims
+RTSP and RTMP sources.
 
 The direct integration runs inside HA Core. The Go gateway is available
 separately for diagnostics, reference testing and standalone deployments.
