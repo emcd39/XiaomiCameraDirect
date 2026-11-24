@@ -25,6 +25,33 @@ On a Linux HA host, pass its config directory, for example:
 The report contains camera names, models, local addresses, route choices, and
 probe results; it does not include Xiaomi account credentials.
 
+To inspect the Xiaomi sign-in flow outside Home Assistant, use the standalone
+probe. It loads `account.py` by path, drives the real login implementation, and
+prints every request and response with tokens/security values redacted:
+
+```powershell
+python scripts/ha_direct_login_probe.py --mock success
+python scripts/ha_direct_login_probe.py --mock phone --code 123456 --region cn
+python scripts/ha_direct_login_probe.py --method password --region cn --username ME
+python scripts/ha_direct_login_probe.py --method qr --region cn
+```
+
+The `--mock` scenarios (`success`, `phone`, `deadend`, `captcha`) are offline and
+verify the probe itself. A real run prompts for the password and prints the
+identity `flag`, whether a verification continuation is available, and the
+camera inventory. It does not print or store credentials. The probe needs only
+the dependencies in [requirements.txt](requirements.txt); Home Assistant itself
+is not required. The same applies to `test_ha_direct_account.py`: it imports
+only `account.py`, so with that dependency set installed you can run it in a
+plain interpreter by injecting the module under its package name first:
+
+```powershell
+python -B -c "import sys,types,importlib.util,unittest; pkgs=('custom_components','custom_components.xiaomi_direct_pilot','custom_components.xiaomi_direct_pilot.xiaomi_direct'); [(sys.modules.__setitem__(n,types.ModuleType(n)),setattr(sys.modules[n],'__path__',[])) for n in pkgs]; s=importlib.util.spec_from_file_location(pkgs[-1]+'.account','custom_components/xiaomi_direct_pilot/xiaomi_direct/account.py'); m=importlib.util.module_from_spec(s); sys.modules[s.name]=m; s.loader.exec_module(m); sys.modules[pkgs[-1]].account=m; t=__import__('tests.test_ha_direct_account',fromlist=['x']); sys.exit(0 if unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromModule(t)).wasSuccessful() else 1)"
+```
+
+The pinned HA environment runs the same file directly with `unittest discover`;
+this shortcut exists only for a local interpreter without Home Assistant.
+
 For Xiaomi Camera Direct, run `python -B -m unittest discover -s tests -p "test_ha_direct_*.py"`
 from the repository root, using the pinned HA image or the dependencies
 in [requirements.txt](requirements.txt). The checks cover preflight, CS2 discovery

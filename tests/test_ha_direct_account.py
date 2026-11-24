@@ -150,6 +150,43 @@ class AccountTest(unittest.IsolatedAsyncioTestCase):
         result = await caught.exception.continuation(Client(), "123456")
         self.assertEqual((result.user_id, result.pass_token), ("uid", "saved"))
 
+    async def test_phone_verification_challenge_continuation(self):
+        """flag=4 (phone) must produce a usable continuation, same as email flag=8."""
+        test = self
+
+        class Client:
+            def get(self, url, **kwargs):
+                url = account.URL(url)
+                if url.host != "account.xiaomi.com":
+                    return Response(cookies={"userId": "uid", "passToken": "saved", "serviceToken": "session"})
+                if url.path.endswith("serviceLogin"):
+                    return Response(b'&&&START&&&{"qs":"q","_sign":"s","sid":"xiaomiio","callback":"cb"}')
+                if url.path.endswith("/identity/list"):
+                    return Response(b'&&&START&&&{"flag":4}', cookies={"identity_session": "transient"})
+                test.assertEqual(url.path, "/identity/auth/verifyPhone")
+                test.assertEqual(url.query["_flag"], "4")
+                return Response(b'&&&START&&&{"maskedPhone":"138****0000"}')
+
+            def post(self, url, **kwargs):
+                url = account.URL(url)
+                if url.path.endswith("serviceLoginAuth2"):
+                    return Response(b'&&&START&&&' + json.dumps({
+                        "notificationUrl": "https://account.xiaomi.com/fe/service/identity/authStart",
+                        "ssecurity": base64.b64encode(b"secret").decode(), "passToken": "saved",
+                    }).encode())
+                if url.path.endswith("sendPhoneTicket"):
+                    return Response(b'&&&START&&&{"code":0}')
+                test.assertEqual(url.path, "/identity/auth/verifyPhone")
+                test.assertEqual(url.query["ticket"], "654321")
+                return Response(b'&&&START&&&{"location":"https://api.io.mi.com/auth"}')
+
+        with self.assertRaises(account.AccountChallenge) as caught:
+            await account.XiaomiAccount.login(Client(), "user", "secret", "cn")
+        self.assertEqual(caught.exception.code, "verification_required")
+        self.assertTrue(caught.exception.continuation)
+        result = await caught.exception.continuation(Client(), "654321")
+        self.assertEqual((result.user_id, result.pass_token), ("uid", "saved"))
+
     async def test_restore_and_send_encrypted_request(self):
         security = b"mock-session-security"
         path = "/v2/device/miss_get_vendor"
