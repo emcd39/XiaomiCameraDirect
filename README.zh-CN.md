@@ -44,8 +44,8 @@ C400 在欧洲区域可勾选 **以较低分辨率串流的 C400 摄像头** 来
 
 ```yaml
 type: custom:xiaomi-direct-camera
-entity: camera.ke_ting_xiao_mi_zhi_neng_she_xiang_ji_yun_tai_ban_2k_direct
-name: 客厅 · 云台 2K
+entity: camera.xiaomi_c701_direct
+name: 客厅摄像头
 ```
 
 | 选项 | 默认 | 作用 |

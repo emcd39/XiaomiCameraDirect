@@ -12,3 +12,6 @@ coverage.out
 *.log
 *.pem
 *.key
+# Local agent workspace: notes about the live HA instance, backups, host paths.
+.workbuddy/
+.pytest_cache/
