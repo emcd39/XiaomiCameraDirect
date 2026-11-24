@@ -6,13 +6,14 @@ from homeassistant.components.button import ButtonEntity
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 
-from .const import C701_MODEL
+from .const import C701_MODEL, PTZ2K_MODEL, PTZ3_MODEL
 from .inventory import camera_device_info
 from .xiaomi_direct.cs2_tcp import CS2Error
 
 
 PTZ_MODELS = frozenset({
     "xiaomi.camera.c201", "chuangmi.camera.039a04", "chuangmi.camera.026c02", C701_MODEL,
+    PTZ2K_MODEL, PTZ3_MODEL,
 })
 OPERATIONS = {"left": 1, "right": 2, "up": 3, "down": 4}
 

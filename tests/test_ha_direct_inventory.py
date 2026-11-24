@@ -3,7 +3,7 @@
 import unittest
 
 from custom_components.xiaomi_direct_pilot.button import PTZ_MODELS
-from custom_components.xiaomi_direct_pilot.const import C701_MODEL
+from custom_components.xiaomi_direct_pilot.const import C701_MODEL, PTZ2K_MODEL, PTZ3_MODEL
 from custom_components.xiaomi_direct_pilot.inventory import QUALITY, account_cameras, excluded_camera_ids, merge_refreshed_camera
 
 
@@ -26,6 +26,13 @@ class DirectCameraInventoryTest(unittest.TestCase):
     def test_c701_has_a_baseline_stream_profile_and_ptz(self):
         self.assertEqual(QUALITY[C701_MODEL], 0)
         self.assertIn(C701_MODEL, PTZ_MODELS)
+
+    def test_cn_ptz_models_have_a_stream_profile_and_ptz(self):
+        # Model IDs confirmed from a real cn account inventory (did 449045561 / 1106518806).
+        # Quality 2 is go2rtc's default for models without a specific override.
+        for model in (PTZ2K_MODEL, PTZ3_MODEL):
+            self.assertEqual(QUALITY[model], 2)
+            self.assertIn(model, PTZ_MODELS)
 
     def test_refresh_drops_saved_route_even_when_camera_ip_is_unchanged(self):
         camera = {

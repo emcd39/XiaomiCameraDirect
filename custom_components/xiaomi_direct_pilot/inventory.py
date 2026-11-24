@@ -11,7 +11,7 @@ import sys
 from homeassistant.components.network import async_get_adapters
 from homeassistant.helpers.device_registry import DeviceInfo
 
-from .const import C400_MODEL, C701_MODEL, DOMAIN
+from .const import C400_MODEL, C701_MODEL, DOMAIN, PTZ2K_MODEL, PTZ3_MODEL
 from .xiaomi_direct.account import XiaomiAccount, create_client_session
 from .xiaomi_direct.cs2_tcp import CS2Error, validate_lan
 
@@ -22,6 +22,8 @@ QUALITY = {
     "chuangmi.camera.026c02": 2,
     "mxiang.camera.mod13": 0,
     C701_MODEL: 0,
+    PTZ2K_MODEL: 2,
+    PTZ3_MODEL: 2,
 }
 _NEIGHBOR = re.compile(r"\b((?:\d{1,3}\.){3}\d{1,3})\b.*?\b((?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2})\b", re.I)
 
