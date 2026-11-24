@@ -205,7 +205,7 @@ async def resolve_challenges(acc, client, error, args):
     return None, 3
 
 
-async def list_cameras(acc, client, region, mock):
+async def list_cameras(acc, account, mock):
     if mock:
         async def fake_devices(self):
             return {"list": [
@@ -215,7 +215,7 @@ async def list_cameras(acc, client, region, mock):
         acc.XiaomiAccount.devices = fake_devices
     print("\n--- device inventory ---")
     try:
-        devices = await acc.XiaomiAccount(client, region=region, user_id="uid", pass_token="saved").devices()
+        devices = await account.devices()
     except acc.AccountError as error:
         print(f"inventory failed: {error}")
         return
@@ -276,7 +276,7 @@ async def run(args, acc):
                 return 2
 
         print(f"\nLogin OK: user_id={account.user_id}  pass_token=<obtained, {len(account.pass_token)} chars>")
-        await list_cameras(acc, client, args.region, args.mock)
+        await list_cameras(acc, account, args.mock)
         return 0
     finally:
         acc._body = original_body
