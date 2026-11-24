@@ -1,6 +1,7 @@
 """One Xiaomi account can expose multiple direct camera entities."""
 
 import asyncio
+import logging
 from ipaddress import IPv4Address, IPv4Network
 from pathlib import Path
 import re
@@ -14,6 +15,9 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from .const import C400_MODEL, C701_MODEL, DOMAIN, PTZ2K_MODEL, PTZ3_MODEL
 from .xiaomi_direct.account import XiaomiAccount, create_client_session
 from .xiaomi_direct.cs2_tcp import CS2Error, validate_lan
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 QUALITY = {
@@ -72,8 +76,13 @@ async def local_route(hass, text):
         camera = IPv4Address(text.strip())
         source = await hass.async_add_executor_job(_route_source, camera)
         adapters = await async_get_adapters(hass)
-    except (AttributeError, ValueError, OSError):
+    except (AttributeError, ValueError, OSError) as error:
+        _LOGGER.debug("local_route(%s): source selection failed: %s", text, error)
         return None
+    _LOGGER.debug(
+        "local_route(%s): source=%s adapters=%s", text, source,
+        [(a.get("name"), [x.get("address") for x in a.get("ipv4", ())]) for a in adapters],
+    )
     for adapter in adapters:
         for address in adapter["ipv4"]:
             if address["address"] != str(source):
@@ -81,7 +90,8 @@ async def local_route(hass, text):
             lan = IPv4Network((source, address["network_prefix"]), strict=False)
             try:
                 validate_lan(camera, source, lan)
-            except CS2Error:
+            except CS2Error as error:
+                _LOGGER.debug("local_route(%s): candidate lan=%s rejected: %s", text, lan, error)
                 continue
             return str(camera), str(source), str(lan)
     return None
@@ -151,9 +161,16 @@ async def resolve_cameras(hass, cameras):
 
     async def resolve(camera):
         candidates = neighbors.get(camera["mac"], set()) if camera["mac"] else set()
+        _LOGGER.debug(
+            "Resolving camera %s: cloud localip=%r mac=%r arp_candidates=%s",
+            camera["device_id"], camera.get("camera_ip"), camera.get("mac"), sorted(candidates),
+        )
         if len(candidates) == 1 and (route := await local_route(hass, next(iter(candidates)))):
+            _LOGGER.debug("Camera %s route via ARP: %s", camera["device_id"], route)
             return route
-        return await local_route(hass, camera["camera_ip"])
+        route = await local_route(hass, camera["camera_ip"])
+        _LOGGER.debug("Camera %s route via cloud localip: %s", camera["device_id"], route)
+        return route
 
     routes = await asyncio.gather(*(resolve(item) for item in cameras.values()))
     result = []
