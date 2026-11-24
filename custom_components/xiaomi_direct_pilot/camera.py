@@ -1,6 +1,7 @@
 """Expose Xiaomi cameras through Home Assistant's native HLS and snapshot services."""
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from ipaddress import IPv4Address, IPv4Network
 
 from homeassistant.components.camera import Camera, CameraEntityFeature, PLATFORM_SCHEMA
@@ -21,8 +22,16 @@ from .xiaomi_direct.ha_media import LocalMediaSource
 from .xiaomi_direct.h264_video import H264Video
 
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
-    vol.Optional("name", default="Xiaomi C201 Direct"): cv.string,
+# The frontend holds back two HLS parts before it plays, so the part length is
+# most of the delay between the camera and the picture. Shortening it from the
+# one second default brings a step of the PTZ pad close to live.
+LOW_LATENCY_PART = 0.3
+STREAM_DOMAIN = "stream"
+# Mirrors homeassistant.components.stream.const.ATTR_SETTINGS.
+STREAM_SETTINGS_KEY = "settings"
+
+
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({    vol.Optional("name", default="Xiaomi C201 Direct"): cv.string,
     vol.Required("device_id"): vol.All(cv.string, vol.Length(min=1)),
     vol.Required("camera_ip"): vol.Coerce(IPv4Address),
     vol.Required("source_ip"): vol.Coerce(IPv4Address),
@@ -199,9 +208,39 @@ class DirectCamera(Camera):
         return self._media.url if self._media else None
 
     async def async_create_stream(self):
-        stream = await super().async_create_stream()
+        stream = await self._create_low_latency_stream()
         if stream is not None:
             # This loopback MPEG-TS source starts on a video keyframe and
             # identifies any audio track before sending its first packet.
             stream.pyav_options.update(analyzeduration="750000", probesize="524288")
         return stream
+
+    async def _create_low_latency_stream(self):
+        """Create the stream with a shorter HLS part than the global default.
+
+        The stream integration keeps one StreamSettings instance for every
+        camera and copies it per stream, so the part length can only be
+        changed around the call that builds ours. Home Assistant holds back
+        two parts before playing, which is the whole delay this camera adds:
+        2 s at the default part of 1 s, 0.6 s at 0.3 s.
+        """
+        stream_data = self.hass.data.get(STREAM_DOMAIN)
+        settings = stream_data.get(STREAM_SETTINGS_KEY) if isinstance(stream_data, dict) else None
+        current = getattr(settings, "part_target_duration", None)
+        if current is None or current <= LOW_LATENCY_PART:
+            return await super().async_create_stream()
+        try:
+            tightened = replace(
+                settings,
+                part_target_duration=LOW_LATENCY_PART,
+                # Home Assistant derives these two from the part length.
+                hls_advance_part_limit=max(int(3 / LOW_LATENCY_PART), 3),
+                hls_part_timeout=2 * LOW_LATENCY_PART,
+            )
+        except (TypeError, ValueError):
+            return await super().async_create_stream()
+        stream_data[STREAM_SETTINGS_KEY] = tightened
+        try:
+            return await super().async_create_stream()
+        finally:
+            stream_data[STREAM_SETTINGS_KEY] = settings
