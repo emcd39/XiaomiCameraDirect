@@ -1,5 +1,6 @@
 """Expose Xiaomi cameras through Home Assistant's native HLS and snapshot services."""
 
+import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from ipaddress import IPv4Address, IPv4Network
@@ -35,9 +36,14 @@ SEGMENT_ADJUSTER = 0.1
 STREAM_DOMAIN = "stream"
 # Mirrors homeassistant.components.stream.const.ATTR_SETTINGS.
 STREAM_SETTINGS_KEY = "settings"
+# One StreamSettings object is shared by every camera, so the shorter part can
+# only be applied around the call that builds ours. Two cameras starting at
+# once would otherwise restore each other's settings mid-call.
+_STREAM_SETTINGS_LOCK = asyncio.Lock()
 
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({    vol.Optional("name", default="Xiaomi C201 Direct"): cv.string,
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
+    vol.Optional("name", default="Xiaomi C201 Direct"): cv.string,
     vol.Required("device_id"): vol.All(cv.string, vol.Length(min=1)),
     vol.Required("camera_ip"): vol.Coerce(IPv4Address),
     vol.Required("source_ip"): vol.Coerce(IPv4Address),
@@ -244,25 +250,37 @@ class DirectCamera(Camera):
         changed around the call that builds ours. Home Assistant holds back
         two parts before playing, which is the whole delay this camera adds:
         2 s at the default part of 1 s, 0.6 s at 0.3 s.
+
+        The swap is serialised: without the lock a second camera starting at
+        the same time can restore the shared object while this call is still
+        waiting inside ``super().async_create_stream()``.
         """
         stream_data = self.hass.data.get(STREAM_DOMAIN)
-        settings = stream_data.get(STREAM_SETTINGS_KEY) if isinstance(stream_data, dict) else None
+        if not isinstance(stream_data, dict):
+            return await super().async_create_stream()
+        settings = stream_data.get(STREAM_SETTINGS_KEY)
         current = getattr(settings, "part_target_duration", None)
         if current is None or current <= LOW_LATENCY_PART:
             return await super().async_create_stream()
-        try:
-            tightened = replace(
-                settings,
-                min_segment_duration=LOW_LATENCY_SEGMENT - SEGMENT_ADJUSTER,
-                part_target_duration=LOW_LATENCY_PART,
-                # Home Assistant derives these two from the part length.
-                hls_advance_part_limit=max(int(3 / LOW_LATENCY_PART), 3),
-                hls_part_timeout=2 * LOW_LATENCY_PART,
-            )
-        except (TypeError, ValueError):
-            return await super().async_create_stream()
-        stream_data[STREAM_SETTINGS_KEY] = tightened
-        try:
-            return await super().async_create_stream()
-        finally:
-            stream_data[STREAM_SETTINGS_KEY] = settings
+        async with _STREAM_SETTINGS_LOCK:
+            # Another camera may have restored the shared object while waiting.
+            settings = stream_data.get(STREAM_SETTINGS_KEY)
+            current = getattr(settings, "part_target_duration", None)
+            if current is None or current <= LOW_LATENCY_PART:
+                return await super().async_create_stream()
+            try:
+                tightened = replace(
+                    settings,
+                    min_segment_duration=LOW_LATENCY_SEGMENT - SEGMENT_ADJUSTER,
+                    part_target_duration=LOW_LATENCY_PART,
+                    # Home Assistant derives these two from the part length.
+                    hls_advance_part_limit=max(int(3 / LOW_LATENCY_PART), 3),
+                    hls_part_timeout=2 * LOW_LATENCY_PART,
+                )
+            except (TypeError, ValueError):
+                return await super().async_create_stream()
+            stream_data[STREAM_SETTINGS_KEY] = tightened
+            try:
+                return await super().async_create_stream()
+            finally:
+                stream_data[STREAM_SETTINGS_KEY] = settings

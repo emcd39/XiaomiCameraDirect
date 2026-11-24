@@ -43,9 +43,11 @@ async def async_setup(hass, config):
 
     card_path = Path(__file__).parent / "www" / "xiaomi-direct-camera.js"
     # Serve the whole directory: the card pulls hls.js from next to itself
-    # because the frontend does not expose it as a global.
+    # because the frontend does not expose it as a global. Cache headers are
+    # off because only the card carries a ?v= revision: with a month-long
+    # max-age an upgraded hls.js would stay stale in every open browser.
     await hass.http.async_register_static_paths([
-        StaticPathConfig("/xiaomi-direct", str(card_path.parent), True)
+        StaticPathConfig("/xiaomi-direct", str(card_path.parent), False)
     ])
     resources = hass.data["lovelace"].resources
     await resources.async_get_info()
