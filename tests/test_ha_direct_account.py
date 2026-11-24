@@ -187,6 +187,54 @@ class AccountTest(unittest.IsolatedAsyncioTestCase):
         result = await caught.exception.continuation(Client(), "654321")
         self.assertEqual((result.user_id, result.pass_token), ("uid", "saved"))
 
+    async def test_captcha_before_phone_ticket_replays_icode_and_ick(self):
+        """A captcha on sendPhoneTicket must be solved and replayed with icode+ick."""
+        test = self
+        attempts = []
+
+        class Client:
+            def get(self, url, **kwargs):
+                url = account.URL(url)
+                if url.host != "account.xiaomi.com":
+                    return Response(cookies={"userId": "uid", "passToken": "saved", "serviceToken": "session"})
+                if url.path.endswith("serviceLogin"):
+                    return Response(b'&&&START&&&{"qs":"q","_sign":"s","sid":"xiaomiio","callback":"cb"}')
+                if url.path.endswith("/identity/list"):
+                    return Response(b'&&&START&&&{"flag":4}', cookies={"identity_session": "transient"})
+                if url.path == "/pass/getCode":
+                    test.assertEqual(url.query["icodeType"], "login")
+                    return Response(b"\xff\xd8image", cookies={"ick": "ick-value"})
+                test.assertEqual(url.path, "/identity/auth/verifyPhone")
+                return Response(b'&&&START&&&{"maskedPhone":"138****0000"}')
+
+            def post(self, url, **kwargs):
+                url = account.URL(url)
+                if url.path.endswith("serviceLoginAuth2"):
+                    return Response(b'&&&START&&&' + json.dumps({
+                        "notificationUrl": "https://account.xiaomi.com/fe/service/identity/authStart",
+                        "ssecurity": base64.b64encode(b"secret").decode(), "passToken": "saved",
+                    }).encode())
+                if url.path.endswith("/sendPhoneTicket"):
+                    attempts.append((kwargs["data"]["icode"], kwargs["cookies"].get("ick")))
+                    if len(attempts) == 1:
+                        return Response(b'&&&START&&&{"code":87001,"captchaUrl":"/pass/getCode?icodeType=login"}')
+                    return Response(b'&&&START&&&{"code":0}')
+                test.assertEqual(url.path, "/identity/auth/verifyPhone")
+                return Response(b'&&&START&&&{"location":"https://api.io.mi.com/auth"}')
+
+        with self.assertRaises(account.AccountChallenge) as caught:
+            await account.XiaomiAccount.login(Client(), "user", "secret", "cn")
+        self.assertEqual(caught.exception.code, "captcha_required")
+        self.assertEqual(caught.exception.captcha, b"\xff\xd8image")
+
+        with self.assertRaises(account.AccountChallenge) as phone:
+            await caught.exception.continuation(Client(), "captcha-text")
+        self.assertEqual(phone.exception.code, "verification_required")
+        self.assertEqual(attempts, [("", None), ("captcha-text", "ick-value")])
+
+        result = await phone.exception.continuation(Client(), "123456")
+        self.assertEqual((result.user_id, result.pass_token), ("uid", "saved"))
+
     async def test_restore_and_send_encrypted_request(self):
         security = b"mock-session-security"
         path = "/v2/device/miss_get_vendor"

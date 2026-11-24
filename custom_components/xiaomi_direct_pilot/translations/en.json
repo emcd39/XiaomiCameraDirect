@@ -14,13 +14,20 @@
       },
       "qr": {
         "title": "Approve access in Xiaomi Home",
-        "description": "Scan this code in Xiaomi Home and approve access. Then select **Submit** in Home Assistant.\n\n![Xiaomi Home sign-in QR code]({qr_image})\n\n[Open the QR image in a new tab]({qr_image}) \u00b7 [Open the Xiaomi approval page]({qr_page})"
+        "description": "Scan this code in Xiaomi Home and approve access. Then select **Submit** in Home Assistant.\n\n![Xiaomi Home sign-in QR code]({qr_image})\n\n[Open the QR image in a new tab]({qr_image}) · [Open the Xiaomi approval page]({qr_page})"
       },
       "verify": {
         "title": "Verify your Xiaomi account",
         "description": "Enter the code Xiaomi sent to your account.",
         "data": {
           "code": "Verification code"
+        }
+      },
+      "captcha": {
+        "title": "Verify your Xiaomi account",
+        "description": "Solve the image code below to let Xiaomi send your verification code.\n\n![CAPTCHA]({captcha_image})",
+        "data": {
+          "code": "Image code"
         }
       },
       "reauth_confirm": {
@@ -37,9 +44,10 @@
       "cannot_sign_in": "Could not sign in. Check the account details and region.",
       "credentials_required": "Enter the Xiaomi account and password when using password sign-in.",
       "qr_pending": "Xiaomi has not confirmed approval yet. Confirm in Xiaomi Home, then submit again.",
-      "captcha_required": "Xiaomi requested a CAPTCHA. The setup wizard cannot display it yet.",
+      "captcha_required": "Xiaomi requested a CAPTCHA. Enter the characters shown in the image.",
       "verification_required": "Xiaomi requested an account verification method the setup wizard cannot complete.",
-      "verification_failed": "The verification code was rejected or expired."
+      "verification_failed": "The verification code was rejected or expired.",
+      "captcha_failed": "CAPTCHA was rejected. Try again."
     },
     "abort": {
       "no_cameras": "There are no cameras in this Xiaomi account and region.",
@@ -51,18 +59,38 @@
   },
   "entity": {
     "sensor": {
-      "night_vision_mode": { "name": "Night vision mode" },
-      "sd_card_status": { "name": "SD card status (raw)" },
-      "sd_card_total": { "name": "SD total capacity (raw)" },
-      "sd_card_free": { "name": "SD free capacity (raw)" },
-      "sd_card_used": { "name": "SD used capacity (raw)" }
+      "night_vision_mode": {
+        "name": "Night vision mode"
+      },
+      "sd_card_status": {
+        "name": "SD card status (raw)"
+      },
+      "sd_card_total": {
+        "name": "SD total capacity (raw)"
+      },
+      "sd_card_free": {
+        "name": "SD free capacity (raw)"
+      },
+      "sd_card_used": {
+        "name": "SD used capacity (raw)"
+      }
     },
     "binary_sensor": {
-      "indicator_light": { "name": "Indicator light enabled" },
-      "motion_detection": { "name": "Motion detection enabled" },
-      "human_detection": { "name": "Person detection enabled" },
-      "pet_detection": { "name": "Pet detection enabled" },
-      "camera_enabled": { "name": "Camera enabled setting" }
+      "indicator_light": {
+        "name": "Indicator light enabled"
+      },
+      "motion_detection": {
+        "name": "Motion detection enabled"
+      },
+      "human_detection": {
+        "name": "Person detection enabled"
+      },
+      "pet_detection": {
+        "name": "Pet detection enabled"
+      },
+      "camera_enabled": {
+        "name": "Camera enabled setting"
+      }
     }
   },
   "options": {

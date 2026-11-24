@@ -23,6 +23,7 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+import tempfile
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -114,6 +115,7 @@ class MockClient:
 
     def __init__(self, scenario):
         self.scenario = scenario
+        self.ticket_attempts = 0
 
     def get(self, url, **_kwargs):
         url = str(url)
@@ -122,6 +124,8 @@ class MockClient:
         if url.endswith("/identity/list"):
             flag = "2" if self.scenario == "deadend" else "4"
             return MockResponse(reply(flag=flag), cookies={"identity_session": "transient"})
+        if "/pass/getCode" in url:
+            return MockResponse(b"\xff\xd8mock-image", cookies={"ick": "ick-value"})
         if "/identity/auth/verifyPhone" in url:
             return MockResponse(reply(maskedPhone="138****0000"))
         if url.startswith("https://api.io.mi.com/auth"):
@@ -131,15 +135,18 @@ class MockClient:
     def post(self, url, **kwargs):
         url = str(url)
         if url.endswith("/pass/serviceLoginAuth2"):
-            if self.scenario == "captcha":
-                return MockResponse(reply(captchaUrl="https://account.xiaomi.com/captcha"))
-            if self.scenario in ("phone", "deadend"):
+            if self.scenario in ("phone", "captcha", "deadend"):
                 return MockResponse(reply(
                     notificationUrl="https://account.xiaomi.com/fe/service/identity/authStart",
                     ssecurity="c2VjcmV0", passToken="saved",
                 ))
             return MockResponse(reply(location="https://api.io.mi.com/auth", ssecurity="c2VjcmV0", passToken="saved"))
         if url.endswith("/sendPhoneTicket"):
+            self.ticket_attempts += 1
+            if self.scenario == "captcha" and self.ticket_attempts == 1:
+                return MockResponse(reply(code=87001, captchaUrl="/pass/getCode?icodeType=login"))
+            if kwargs.get("cookies", {}).get("ick"):
+                assert kwargs["data"]["icode"] == "123456"
             return MockResponse(reply(code=0))
         if "/identity/auth/verifyPhone" in url:
             assert kwargs.get("cookies", {}).get("identity_session") == "transient"
@@ -150,8 +157,14 @@ class MockClient:
 def describe_challenge(acc, error):
     print(f"\n=== Xiaomi challenge: {error.code} ===")
     if error.code == "captcha_required":
-        print("A graphical captcha is required. Open the captchaURL shown above in a browser;")
-        print("this local probe cannot solve it for you.")
+        image = getattr(error, "captcha", None)
+        if image:
+            fd, name = tempfile.mkstemp(prefix="xiaomi-captcha-", suffix=".jpg")
+            with open(fd, "wb") as handle:
+                handle.write(image)
+            print(f"CAPTCHA image saved to {name} - open it to read the characters.")
+        else:
+            print("A graphical captcha is required. Open the captchaURL shown above in a browser.")
     elif error.code == "verification_required":
         if getattr(error, "continuation", None):
             print("A phone/email code was requested. The continuation is available.")
@@ -162,6 +175,34 @@ def describe_challenge(acc, error):
         print("QR has not been scanned/approved yet.")
     elif error.code == "qr_expired":
         print("QR expired; restart the probe.")
+
+
+async def resolve_challenges(acc, client, error, args):
+    """Walk captcha -> verification -> account. Returns (account, exit_code)."""
+    for _ in range(5):
+        describe_challenge(acc, error)
+        continuation = getattr(error, "continuation", None)
+        if not continuation:
+            print("No continuation available: this challenge cannot be completed.")
+            return None, 3
+        if error.code == "captcha_required":
+            prompt = "Characters in the CAPTCHA image: "
+        elif error.code == "verification_required":
+            prompt = "Verification code (SMS/email): "
+        else:
+            return None, 3
+        code = args.code or input(prompt).strip()
+        try:
+            outcome = await continuation(client, code)
+        except acc.AccountChallenge as next_error:
+            error = next_error
+            continue
+        except acc.AccountError as failure:
+            print(f"\nLogin failed: {failure}")
+            return None, 2
+        return outcome, 0
+    print("Too many challenges; aborting.")
+    return None, 3
 
 
 async def list_cameras(acc, client, region, mock):
@@ -227,13 +268,9 @@ async def run(args, acc):
             try:
                 account = await acc.XiaomiAccount.login(client, username, password, args.region)
             except acc.AccountChallenge as error:
-                describe_challenge(acc, error)
-                continuation = getattr(error, "continuation", None)
-                if error.code == "verification_required" and continuation:
-                    code = args.code or input("Verification code: ").strip()
-                    account = await continuation(client, code)
-                else:
-                    return 3
+                account, code = await resolve_challenges(acc, client, error, args)
+                if account is None:
+                    return code
             except acc.AccountError as error:
                 print(f"\nLogin failed: {error}")
                 return 2

@@ -32,13 +32,17 @@ prints every request and response with tokens/security values redacted:
 ```powershell
 python scripts/ha_direct_login_probe.py --mock success
 python scripts/ha_direct_login_probe.py --mock phone --code 123456 --region cn
+python scripts/ha_direct_login_probe.py --mock captcha --code 123456 --region cn
 python scripts/ha_direct_login_probe.py --method password --region cn --username ME
 python scripts/ha_direct_login_probe.py --method qr --region cn
 ```
 
 The `--mock` scenarios (`success`, `phone`, `deadend`, `captcha`) are offline and
-verify the probe itself. A real run prompts for the password and prints the
-identity `flag`, whether a verification continuation is available, and the
+verify the probe itself. The `captcha` scenario reproduces the Chinese-account
+path where Xiaomi demands a graphical code before issuing the SMS ticket; the
+probe saves the image to a temporary file and walks captcha -> verification ->
+account, matching the flow in go2rtc `cloud.go`. A real run prompts for the
+password and any captcha/SMS codes, prints the identity `flag`, and lists the
 camera inventory. It does not print or store credentials. The probe needs only
 the dependencies in [requirements.txt](requirements.txt); Home Assistant itself
 is not required. The same applies to `test_ha_direct_account.py`: it imports

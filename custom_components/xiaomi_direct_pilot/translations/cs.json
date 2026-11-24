@@ -23,6 +23,13 @@
           "code": "Ověřovací kód"
         }
       },
+      "captcha": {
+        "title": "Ověření účtu Xiaomi",
+        "description": "Vyřeš obrázkový kód níže, aby ti Xiaomi mohlo poslat ověřovací kód.\n\n![CAPTCHA]({captcha_image})",
+        "data": {
+          "code": "Obrázkový kód"
+        }
+      },
       "reauth_confirm": {
         "title": "Obnov přihlášení k Xiaomi Home",
         "description": "Potvrď přístup ke stejnému Xiaomi účtu.",
@@ -37,9 +44,10 @@
       "cannot_sign_in": "Přihlášení se nezdařilo. Zkontroluj účet a region.",
       "credentials_required": "Pro přihlášení heslem zadej účet Xiaomi a heslo.",
       "qr_pending": "Xiaomi zatím přístup nepotvrdilo. Potvrď jej v aplikaci Xiaomi Home a potom formulář odešli znovu.",
-      "captcha_required": "Xiaomi požaduje CAPTCHA. Průvodce ji zatím neumí zobrazit.",
+      "captcha_required": "Xiaomi požaduje CAPTCHA. Zadej znaky zobrazené na obrázku.",
       "verification_required": "Xiaomi požaduje způsob ověření, který průvodce zatím neumí dokončit.",
-      "verification_failed": "Ověřovací kód byl odmítnut nebo vypršel."
+      "verification_failed": "Ověřovací kód byl odmítnut nebo vypršel.",
+      "captcha_failed": "CAPTCHA byla odmítnuta. Zkus to znovu."
     },
     "abort": {
       "no_cameras": "V tomto účtu a regionu Xiaomi nejsou žádné kamery.",
@@ -51,18 +59,38 @@
   },
   "entity": {
     "sensor": {
-      "night_vision_mode": { "name": "Režim nočního vidění" },
-      "sd_card_status": { "name": "Stav SD karty (kód)" },
-      "sd_card_total": { "name": "Celková kapacita SD (hodnota kamery)" },
-      "sd_card_free": { "name": "Volná kapacita SD (hodnota kamery)" },
-      "sd_card_used": { "name": "Využitá kapacita SD (hodnota kamery)" }
+      "night_vision_mode": {
+        "name": "Režim nočního vidění"
+      },
+      "sd_card_status": {
+        "name": "Stav SD karty (kód)"
+      },
+      "sd_card_total": {
+        "name": "Celková kapacita SD (hodnota kamery)"
+      },
+      "sd_card_free": {
+        "name": "Volná kapacita SD (hodnota kamery)"
+      },
+      "sd_card_used": {
+        "name": "Využitá kapacita SD (hodnota kamery)"
+      }
     },
     "binary_sensor": {
-      "indicator_light": { "name": "Kontrolka zapnutá" },
-      "motion_detection": { "name": "Detekce pohybu zapnutá" },
-      "human_detection": { "name": "Detekce osob zapnutá" },
-      "pet_detection": { "name": "Detekce zvířat zapnutá" },
-      "camera_enabled": { "name": "Nastavení zapnutí kamery" }
+      "indicator_light": {
+        "name": "Kontrolka zapnutá"
+      },
+      "motion_detection": {
+        "name": "Detekce pohybu zapnutá"
+      },
+      "human_detection": {
+        "name": "Detekce osob zapnutá"
+      },
+      "pet_detection": {
+        "name": "Detekce zvířat zapnutá"
+      },
+      "camera_enabled": {
+        "name": "Nastavení zapnutí kamery"
+      }
     }
   },
   "options": {

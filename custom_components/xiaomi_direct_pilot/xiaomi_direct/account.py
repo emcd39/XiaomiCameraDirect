@@ -67,9 +67,10 @@ class AccountAuthorizationError(AccountError):
 class AccountChallenge(AccountError):
     """Sign-in requires an interactive captcha or second factor."""
 
-    def __init__(self, code, continuation=None):
+    def __init__(self, code, continuation=None, captcha=None):
         self.code = code
         self.continuation = continuation
+        self.captcha = captcha
         super().__init__(code)
 
 
@@ -130,6 +131,23 @@ def _xiaomi_https(url):
         and url.host is not None and (url.host == "mi.com" or url.host.endswith(".mi.com")
                                      or url.host == "xiaomi.com" or url.host.endswith(".xiaomi.com"))
     )
+
+
+async def _captcha_challenge(client, reply):
+    """Fetch the captcha image and its ick cookie (go2rtc cloud.go:getCaptcha)."""
+    raw = reply.get("captchaURL") or reply.get("captchaUrl") or ""
+    url = URL(raw)
+    if url.host is None:
+        url = URL("https://account.xiaomi.com" + (raw if raw.startswith("/") else "/" + raw))
+    if not _xiaomi_https(url):
+        raise AccountError("Xiaomi returned an invalid captcha URL")
+    async with client.get(url, allow_redirects=False, timeout=ClientTimeout(total=10)) as response:
+        response.raise_for_status()
+        ick = response.cookies.get("ick")
+        image = await _body(response)
+    if not ick:
+        raise AccountError("Xiaomi captcha did not provide a session cookie")
+    return image, ick.value
 
 
 async def _body(response):
@@ -250,22 +268,23 @@ class XiaomiAccount:
                 preflight_url = URL(f"https://account.xiaomi.com/identity/auth/verify{endpoint}").with_query(
                     {"_flag": flag, "_json": "true"}
                 )
-                stage = "verification_preflight"
-                async with client.get(preflight_url, cookies={"identity_session": identity_session},
-                                      allow_redirects=False, timeout=ClientTimeout(total=10)) as response:
-                    response.raise_for_status()
-                    _login_reply(await _body(response), stage)
                 ticket_url = URL(f"https://account.xiaomi.com/identity/auth/send{endpoint}Ticket")
-                stage = "verification_send"
-                async with client.post(ticket_url, data={"_json": "true", "icode": "", "retry": "0"},
-                                       cookies={"identity_session": identity_session}, allow_redirects=False,
-                                       timeout=ClientTimeout(total=10)) as response:
-                    response.raise_for_status()
-                    ticket_result = _login_reply(await _body(response), stage)
-                if _requires_captcha(ticket_result):
-                    raise AccountChallenge("captcha_required")
-                if ticket_result.get("code") not in (None, 0):
-                    raise AccountError(f"Xiaomi rejected the verification request (code {_response_code(ticket_result)})")
+
+                async def send_ticket(http_client, icode, ick):
+                    stage = "verification_preflight"
+                    async with http_client.get(preflight_url, cookies={"identity_session": identity_session},
+                                               allow_redirects=False, timeout=ClientTimeout(total=10)) as response:
+                        response.raise_for_status()
+                        _login_reply(await _body(response), stage)
+                    cookies = {"identity_session": identity_session}
+                    if ick:
+                        cookies["ick"] = ick
+                    stage = "verification_send"
+                    async with http_client.post(ticket_url, data={"_json": "true", "icode": icode, "retry": "0"},
+                                                cookies=cookies, allow_redirects=False,
+                                                timeout=ClientTimeout(total=10)) as response:
+                        response.raise_for_status()
+                        return _login_reply(await _body(response), stage)
 
                 async def continue_verification(http_client, code):
                     try:
@@ -284,6 +303,32 @@ class XiaomiAccount:
                         raise
                     except (ClientError, TimeoutError, ValueError, TypeError, KeyError, AttributeError):
                         raise AccountError("Xiaomi verification failed") from None
+
+                # go2rtc cloud.go:sendTicket - a captcha here must be solved and
+                # replayed with icode+ick before the SMS/email ticket is issued.
+                async def continue_captcha(http_client, captcha_code, ick):
+                    ticket_result = await send_ticket(http_client, captcha_code, ick)
+                    if _requires_captcha(ticket_result):
+                        image, new_ick = await _captcha_challenge(http_client, ticket_result)
+                        raise AccountChallenge(
+                            "captcha_required",
+                            lambda client, answer: continue_captcha(client, answer, new_ick),
+                            image,
+                        )
+                    if ticket_result.get("code") not in (None, 0):
+                        raise AccountError(f"Xiaomi rejected the verification request (code {_response_code(ticket_result)})")
+                    raise AccountChallenge("verification_required", continue_verification)
+
+                ticket_result = await send_ticket(client, "", "")
+                if _requires_captcha(ticket_result):
+                    image, ick = await _captcha_challenge(client, ticket_result)
+                    raise AccountChallenge(
+                        "captcha_required",
+                        lambda http_client, answer: continue_captcha(http_client, answer, ick),
+                        image,
+                    )
+                if ticket_result.get("code") not in (None, 0):
+                    raise AccountError(f"Xiaomi rejected the verification request (code {_response_code(ticket_result)})")
 
                 raise AccountChallenge("verification_required", continue_verification)
             location = URL(result.get("location") or "")

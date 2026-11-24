@@ -1,5 +1,6 @@
 """Authorize a Xiaomi account and discover its cameras."""
 
+import base64
 import logging
 
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigFlow, OptionsFlowWithReload
@@ -86,9 +87,13 @@ class DirectCameraConfigFlow(ConfigFlow, domain=DOMAIN):
                         return await self._use_account(account)
             except AccountChallenge as error:
                 _LOGGER.info("Xiaomi direct sign-in requires %s", error.code)
-                if error.code == "verification_required" and getattr(error, "continuation", None):
+                if getattr(error, "continuation", None):
                     self._verify_xiaomi = error.continuation
-                    return await self.async_step_verify()
+                    if error.code == "captcha_required":
+                        self._captcha = error.captcha
+                        return await self.async_step_captcha()
+                    if error.code == "verification_required":
+                        return await self.async_step_verify()
                 errors["base"] = error.code
             except AccountError as error:
                 _LOGGER.warning("Xiaomi direct sign-in: %s", error)
@@ -116,22 +121,65 @@ class DirectCameraConfigFlow(ConfigFlow, domain=DOMAIN):
             description_placeholders={"qr_image": str(self._approval.image), "qr_page": str(self._approval.page)},
         )
 
-    async def async_step_verify(self, user_input=None):
+    async def _continue_verification(self, code, failed_error):
+        """Run the pending continuation and route to the next challenge or completion."""
         errors = {}
-        if user_input is not None:
-            try:
-                async with create_client_session() as client:
-                    account = await self._verify_xiaomi(client, user_input["code"].strip())
-                    result = await self._use_account(account)
-                    self._verify_xiaomi = None
-                    return result
-            except AccountError as error:
-                _LOGGER.warning("Xiaomi direct verification: %s", error)
-                errors["base"] = "verification_failed"
+        try:
+            async with create_client_session() as client:
+                outcome = await self._verify_xiaomi(client, code)
+                if isinstance(outcome, AccountChallenge):
+                    self._verify_xiaomi = outcome.continuation
+                    if outcome.code == "captcha_required":
+                        self._captcha = outcome.captcha
+                        self._in_captcha = True
+                        return await self.async_step_captcha()
+                    self._in_captcha = False
+                    return await self.async_step_verify()
+                result = await self._use_account(outcome)
+                self._verify_xiaomi = None
+                return result
+        except AccountChallenge as challenge:
+            self._verify_xiaomi = challenge.continuation
+            if challenge.code == "captcha_required":
+                self._captcha = challenge.captcha
+                self._in_captcha = True
+                return await self.async_step_captcha()
+            self._in_captcha = False
+            return await self.async_step_verify()
+        except AccountError as error:
+            _LOGGER.warning("Xiaomi direct verification: %s", error)
+            errors["base"] = failed_error
+        return self._show_continue_form(errors)
+
+    def _show_continue_form(self, errors):
+        if getattr(self, "_in_captcha", False):
+            return self.async_show_form(
+                step_id="captcha", errors=errors,
+                data_schema=vol.Schema({vol.Required("code"): str}),
+                description_placeholders={"captcha_image": self._captcha_url()},
+            )
         return self.async_show_form(
             step_id="verify", errors=errors,
             data_schema=vol.Schema({vol.Required("code"): _PASSWORD}),
         )
+
+    def _captcha_url(self):
+        image = getattr(self, "_captcha", None) or b""
+        return "data:image/jpeg;base64," + base64.b64encode(image).decode("ascii")
+
+    async def async_step_captcha(self, user_input=None):
+        self._in_captcha = True
+        if user_input is not None:
+            result = await self._continue_verification(user_input["code"].strip(), "captcha_failed")
+            self._in_captcha = False
+            return result
+        return self._show_continue_form({})
+
+    async def async_step_verify(self, user_input=None):
+        self._in_captcha = False
+        if user_input is not None:
+            return await self._continue_verification(user_input["code"].strip(), "verification_failed")
+        return self._show_continue_form({})
 
 
 class DirectCameraOptionsFlow(OptionsFlowWithReload):
