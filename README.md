@@ -4,6 +4,8 @@ Xiaomi cameras in Home Assistant with video and supported controls over the
 local network. Home Assistant uses the Xiaomi account for sign-in, inventory,
 and the keys needed to open a new local camera session.
 
+> 中文说明：[README.zh-CN.md](README.zh-CN.md)
+
 ## Install in Home Assistant
 
 Requires Home Assistant Core 2026.10.4 or later and network access from Home
