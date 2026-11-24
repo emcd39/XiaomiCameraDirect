@@ -26,7 +26,14 @@ class PTZControl:
 
     def set_video(self, video):
         self.video = video
-        async_dispatcher_send(self.hass, self.signal)
+        # Media sessions open and close on a worker thread, while Home
+        # Assistant only allows dispatcher callbacks that write entity state
+        # on the event loop. Hop over instead of calling them in place.
+        try:
+            self.hass.loop.call_soon_threadsafe(async_dispatcher_send, self.hass, self.signal)
+        except RuntimeError:
+            # Shutdown closes the loop before the last session does.
+            pass
 
     async def press(self, direction):
         video = self.video
