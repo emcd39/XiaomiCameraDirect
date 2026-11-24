@@ -42,8 +42,10 @@ async def async_setup(hass, config):
     register_ptz_commands(hass)
 
     card_path = Path(__file__).parent / "www" / "xiaomi-direct-camera.js"
+    # Serve the whole directory: the card pulls hls.js from next to itself
+    # because the frontend does not expose it as a global.
     await hass.http.async_register_static_paths([
-        StaticPathConfig("/xiaomi-direct/xiaomi-direct-camera.js", str(card_path), True)
+        StaticPathConfig("/xiaomi-direct", str(card_path.parent), True)
     ])
     resources = hass.data["lovelace"].resources
     await resources.async_get_info()

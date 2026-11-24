@@ -35,26 +35,20 @@ For a manual installation, copy the complete
 `custom_components/xiaomi_direct_pilot` directory into the Home Assistant
 configuration directory under `custom_components`, restart and start at step 2.
 Existing direct installations use the same integration domain and config entries.
-The optional dashboard card is bundled with the integration. The example
-[WebRTC dashboard](docs/examples/lovelace-xiaomi-direct.json) uses the native
-camera card plus PTZ buttons and needs no extra frontend card.
+The optional dashboard card is bundled with the integration and does its own
+playback: it ships hls.js next to the card, so no WebRTC Camera frontend is
+needed. The example [dashboard](docs/examples/lovelace-xiaomi-direct.json)
+only needs the entity IDs from your HA. Set `ptz: false` to hide the D-pad and
+`latency_indicator: false` to hide the second counter in the corner.
 
 ### Stream latency
 
-The frontend receives the local session as low-latency HLS. Home Assistant
-keeps a one second part by default, so the picture trails the camera by about
-two seconds. Shorten the part to get closer to live:
-
-```yaml
-stream:
-  part_duration: 0.3
-```
-
-Restart Home Assistant afterwards and check that the media playlist shows
-`PART-TARGET=0.3`. Smaller parts cost more CPU and more HTTP requests; 0.2 is
-the smallest value the stream integration accepts. WebRTC is not used here:
-the loopback relay is MPEG-TS, and the built-in go2rtc provider only claims
-RTSP and RTMP sources.
+The card plays low-latency HLS with a fixed sync distance (`liveSyncDuration`
+0.9 s, `maxLiveSyncPlaybackRate` 1.3) instead of the player default, and the
+integration shortens the stream itself from 1 s parts and 6 s segments to
+0.3 s parts and 2 s segments. A camera sends a keyframe about once a second,
+so a short part is enough; the long segment was what turned a small stall into
+a five second jump while the player waited for a whole segment.
 
 The direct integration runs inside HA Core. The Go gateway is available
 separately for diagnostics, reference testing and standalone deployments.

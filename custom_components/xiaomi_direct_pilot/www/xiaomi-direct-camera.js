@@ -1,53 +1,63 @@
+const HLS_CONFIG = {
+  // Low-latency HLS, held to a fixed sync distance instead of the player's
+  // default. The card ships hls.js because the frontend does not expose it.
+  lowLatencyMode: true,
+  backBufferLength: 0,
+  liveSyncDuration: 0.9,
+  liveMaxLatencyDuration: 4,
+  maxLiveSyncPlaybackRate: 1.3,
+  enableWorker: true,
+};
+const HLS_SCRIPT = "/xiaomi-direct/hls.light.min.js";
+const PTZ_HOLD_DELAY = 520;
+const PTZ_HOLD_INTERVAL = 260;
+
 class XiaomiDirectCameraCard extends HTMLElement {
   constructor() {
     super();
     this._hass = undefined;
     this._config = undefined;
-    this._cameraConfig = undefined;
-    this._cameraReady = undefined;
-    this._volumeVideo = undefined;
-    this._volumeSyncHandler = () => this._syncVolume();
-    this._pressed = false;
-    this._sendQueue = Promise.resolve();
-    this._encodedFrames = [];
-    this._pendingBatches = 0;
-    this._closed = false;
+    this._hls = undefined;
+    this._hlsLoader = undefined;
+    this._starting = false;
     this._ptzEnabled = true;
+    this._showLatency = true;
     this._ptzButtons = {};
     this._ptzBusy = false;
     this._ptzHold = undefined;
     this._ptzRepeat = undefined;
     this._ptzErrorTimer = undefined;
+    this._latencyTimer = undefined;
+    this._retryTimer = undefined;
 
     const root = this.attachShadow({ mode: "open" });
     root.innerHTML = `
       <style>
         :host { display: block; }
-        .controls { display: flex; align-items: center; justify-content: space-between;
-          flex-wrap: wrap; gap: 8px 16px; padding: 8px 12px;
-          background: var(--card-background-color); color: var(--primary-text-color); }
-        label, .talkback { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-        .talkback[hidden] { display: none; }
-        input { width: 88px; accent-color: var(--primary-color); }
-        button { border: 1px solid var(--divider-color); border-radius: 8px; padding: 6px 10px;
-          background: transparent; color: inherit; font: inherit; touch-action: none; user-select: none; }
-        button:disabled { opacity: .5; }
-        button[aria-pressed="true"] { background: var(--error-color); color: white; }
-        .status { color: var(--secondary-text-color); font-size: 12px; }
-        .stage { position: relative; }
+        .stage { position: relative; background: #000; overflow: hidden;
+          border-radius: var(--ha-card-border-radius, 12px); }
+        video { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain;
+          background: #000; cursor: pointer; }
+        .latency { position: absolute; right: 8px; top: 8px; padding: 2px 6px;
+          border-radius: 6px; background: rgba(0, 0, 0, .55); color: #fff; font-size: 11px;
+          font-variant-numeric: tabular-nums; }
+        .latency[hidden] { display: none; }
+        .overlay { position: absolute; inset: 0; display: flex; align-items: center;
+          justify-content: center; padding: 16px; text-align: center; color: #fff;
+          font-size: 13px; background: rgba(0, 0, 0, .62); }
+        .overlay[hidden] { display: none; }
         .ptz { position: absolute; left: 10px; bottom: 10px; display: grid;
           grid-template-columns: repeat(3, 34px); grid-template-rows: repeat(3, 34px);
           gap: 3px; padding: 6px; border-radius: 14px;
           background: rgba(0, 0, 0, .42); backdrop-filter: blur(3px); }
         .ptz[hidden] { display: none; }
-        .ptz-button { display: inline-flex; align-items: center; justify-content: center;
+        .ptz button { display: inline-flex; align-items: center; justify-content: center;
           width: 34px; height: 34px; padding: 0; border-radius: 50%;
           border: 1px solid rgba(255, 255, 255, .38); background: rgba(255, 255, 255, .14);
-          color: #fff; touch-action: none; }
-        .ptz-button ha-icon { --mdc-icon-size: 22px; pointer-events: none; }
-        .ptz-button[data-active="true"] { background: var(--primary-color);
-          border-color: var(--primary-color); color: #fff; }
-        .ptz[data-live="false"] .ptz-button { opacity: .5; }
+          color: #fff; cursor: pointer; touch-action: none; }
+        .ptz button[data-active="true"] { background: var(--primary-color);
+          border-color: var(--primary-color); }
+        .ptz[data-live="false"] button { opacity: .55; }
         .ptz-up { grid-area: 1 / 2; }
         .ptz-left { grid-area: 2 / 1; }
         .ptz-right { grid-area: 2 / 3; }
@@ -58,28 +68,21 @@ class XiaomiDirectCameraCard extends HTMLElement {
         .ptz-error:empty { display: none; }
       </style>
       <div class="stage">
-        <div class="video"></div>
+        <video playsinline muted autoplay></video>
+        <span class="latency" hidden></span>
+        <div class="overlay" hidden>正在连接…</div>
         <div class="ptz" hidden>
-          <button type="button" class="ptz-button ptz-up" aria-label="Nahoru"><ha-icon icon="mdi:chevron-up"></ha-icon></button>
-          <button type="button" class="ptz-button ptz-left" aria-label="Vlevo"><ha-icon icon="mdi:chevron-left"></ha-icon></button>
-          <button type="button" class="ptz-button ptz-right" aria-label="Vpravo"><ha-icon icon="mdi:chevron-right"></ha-icon></button>
-          <button type="button" class="ptz-button ptz-down" aria-label="Dolů"><ha-icon icon="mdi:chevron-down"></ha-icon></button>
+          <button type="button" class="ptz-up" aria-label="Nahoru"><ha-icon icon="mdi:chevron-up"></ha-icon></button>
+          <button type="button" class="ptz-left" aria-label="Vlevo"><ha-icon icon="mdi:chevron-left"></ha-icon></button>
+          <button type="button" class="ptz-right" aria-label="Vpravo"><ha-icon icon="mdi:chevron-right"></ha-icon></button>
+          <button type="button" class="ptz-down" aria-label="Dolů"><ha-icon icon="mdi:chevron-down"></ha-icon></button>
           <span class="ptz-error" role="status" aria-live="polite"></span>
         </div>
-      </div>
-      <div class="controls">
-        <label>Hlasitost poslechu <input type="range" min="0" max="100" value="100" disabled></label>
-        <div class="talkback">
-          <button type="button" aria-pressed="false" disabled>🎙 Podrž pro mluvení</button>
-          <span class="status" aria-live="polite"></span>
-        </div>
       </div>`;
-    this._camera = undefined;
-    this._videoHost = root.querySelector(".video");
-    this._volumeSlider = root.querySelector("input");
-    this._talkback = root.querySelector(".talkback");
-    this._button = root.querySelector(".talkback button");
-    this._status = root.querySelector(".status");
+
+    this._video = root.querySelector("video");
+    this._latency = root.querySelector(".latency");
+    this._overlay = root.querySelector(".overlay");
     this._ptz = root.querySelector(".ptz");
     this._ptzError = root.querySelector(".ptz-error");
     for (const direction of ["up", "down", "left", "right"]) {
@@ -95,93 +98,146 @@ class XiaomiDirectCameraCard extends HTMLElement {
       });
       this._ptzButtons[direction] = button;
     }
-    this._volumeSlider.addEventListener("input", () => {
-      if (this._volumeVideo) this._volumeVideo.volume = this._volumeSlider.valueAsNumber / 100;
-    });
-    this._button.addEventListener("pointerdown", (event) => this._press(event));
-    this._button.addEventListener("pointerup", () => this._release());
-    this._button.addEventListener("pointercancel", () => this._release());
-    this._button.addEventListener("lostpointercapture", () => this._release());
-    this._button.addEventListener("keydown", (event) => {
-      if ((event.code === "Space" || event.code === "Enter") && !event.repeat) {
-        event.preventDefault();
-        this._beginTalk();
-      }
-    });
-    this._button.addEventListener("keyup", (event) => {
-      if (event.code === "Space" || event.code === "Enter") this._release();
+    this._video.addEventListener("click", () => {
+      this._video.muted = !this._video.muted;
     });
     this._visibility = () => {
-      if (document.hidden) {
-        this._release();
-        this._endPtz();
-      }
+      if (document.hidden) this._endPtz();
     };
   }
 
   connectedCallback() {
     document.addEventListener("visibilitychange", this._visibility);
-    if (this._camera) this._bindVolumeIcon();
+    this._maybeStart();
+    this._tickLatency();
+  }
+
+  disconnectedCallback() {
+    document.removeEventListener("visibilitychange", this._visibility);
+    this._endPtz();
+    this._teardownHls();
+    clearInterval(this._latencyTimer);
+    clearTimeout(this._retryTimer);
   }
 
   setConfig(config) {
     if (!config.entity) throw new Error("Xiaomi Direct card requires an entity");
     this._config = { ...config };
-    this._talkback.hidden = config.push_to_talk === false;
-    if (this._talkback.hidden) {
-      this._button.disabled = true;
-      this._release();
-    }
     this._ptzEnabled = config.ptz !== false;
+    this._showLatency = config.latency_indicator !== false;
     if (!this._ptzEnabled) {
       this._ptz.hidden = true;
       this._endPtz();
     }
-    const cameraConfig = { ...config };
-    delete cameraConfig.type;
-    delete cameraConfig.push_to_talk;
-    delete cameraConfig.ptz;
-    this._audioRequested = config.media?.split(",").some((track) => track.trim() === "audio");
-    if (this._audioRequested) {
-      // WebRTC Camera checks for audio at loadeddata. With MSE that can be
-      // before the browser decodes any audio, so keep its native toggle visible.
-      cameraConfig.style = `${config.style ?? ""}\n.ui .volume { display: block !important; }`;
-    }
-    this._cameraConfig = cameraConfig;
-
-    // Do not attach <webrtc-camera> until it is defined and configured.
-    // Its connectedCallback reads config.muted immediately, so inserting it
-    // from this card's constructor causes a frontend exception.
-    this._cameraReady = customElements.whenDefined("webrtc-camera").then(() => {
-      if (typeof customElements.get("webrtc-camera") !== "function") {
-        throw new Error("WebRTC Camera card se nenačetla správně");
-      }
-      if (!this._camera) {
-        const camera = document.createElement("webrtc-camera");
-        camera.setConfig(this._cameraConfig);
-        if (this._hass) camera.hass = this._hass;
-        this._camera = camera;
-        this._videoHost.append(camera);
-        this._bindVolumeIcon();
-      } else {
-        this._camera.setConfig(this._cameraConfig);
-        if (this._hass) this._camera.hass = this._hass;
-        this._bindVolumeIcon();
-      }
-    }).catch((error) => {
-      this._status.textContent = error?.message || "WebRTC Camera card se nepodařilo načíst";
-    });
+    this._maybeStart();
+    this._tickLatency();
   }
 
   set hass(hass) {
     this._hass = hass;
-    if (this._camera) this._camera.hass = hass;
-    const state = this._config && hass.states[this._config.entity];
-    const enabled = !this._talkback.hidden && state?.state !== "unavailable"
-      && state?.attributes?.talkback_enabled === true;
-    this._button.disabled = !enabled;
-    this._status.textContent = enabled ? "Mikrofon C701 je zapnutý v integraci" : "Zapni mikrofon C701 v nastavení integrace";
-    this._syncPtz(state);
+    this._maybeStart();
+    this._syncPtz(hass.states?.[this._config?.entity]);
+  }
+
+  getCardSize() {
+    return 5;
+  }
+
+  _maybeStart(force = false) {
+    if (this._hls && !force) return;
+    if (force) this._teardownHls();
+    if (!this._hass || !this._config || this._starting) return;
+    this._start();
+  }
+
+  async _start() {
+    this._starting = true;
+    this._overlay.textContent = "正在连接…";
+    this._overlay.hidden = false;
+    try {
+      const { url } = await this._hass.callWS({
+        type: "camera/stream",
+        entity_id: this._config.entity,
+      });
+      const Hls = await this._ensureHls();
+      if (!this.isConnected) return;
+      const hls = new Hls(HLS_CONFIG);
+      hls.on(Hls.Events.ERROR, (_event, data) => this._onHlsError(Hls, data));
+      hls.on(Hls.Events.FRAG_BUFFERED, () => { this._overlay.hidden = true; });
+      hls.loadSource(new URL(url, window.location.origin).toString());
+      hls.attachMedia(this._video);
+      this._hls = hls;
+      const playback = this._video.play?.();
+      playback?.catch?.(() => { /* the browser may wait for a tap */ });
+    } catch (error) {
+      this._fail(error);
+    } finally {
+      this._starting = false;
+    }
+  }
+
+  async _ensureHls() {
+    if (window.Hls) return window.Hls;
+    if (!this._hlsLoader) {
+      this._hlsLoader = new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = HLS_SCRIPT;
+        script.async = true;
+        script.onload = () => (window.Hls ? resolve(window.Hls) : reject(new Error("hls.js 未初始化")));
+        script.onerror = () => reject(new Error("无法加载 hls.js"));
+        document.head.append(script);
+      }).catch((error) => {
+        this._hlsLoader = undefined;
+        throw error;
+      });
+    }
+    return this._hlsLoader;
+  }
+
+  _onHlsError(Hls, data) {
+    if (!data.fatal) return;
+    if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+      this._hls?.startLoad();
+      return;
+    }
+    if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+      this._hls?.recoverMediaError();
+      return;
+    }
+    this._fail(new Error(data.details || "视频流中断"));
+  }
+
+  _fail(error) {
+    this._overlay.textContent = error?.message || "视频流无法播放";
+    this._overlay.hidden = false;
+    this._teardownHls();
+    clearTimeout(this._retryTimer);
+    this._retryTimer = setTimeout(() => this._maybeStart(true), 6000);
+  }
+
+  _teardownHls() {
+    if (this._hls) {
+      this._hls.destroy();
+      this._hls = undefined;
+    }
+  }
+
+  _tickLatency() {
+    clearInterval(this._latencyTimer);
+    if (!this._showLatency) {
+      this._latency.hidden = true;
+      return;
+    }
+    this._latencyTimer = setInterval(() => {
+      const video = this._video;
+      if (!video?.buffered?.length) {
+        this._latency.hidden = true;
+        return;
+      }
+      const live = video.buffered.end(video.buffered.length - 1) - video.currentTime;
+      this._latency.textContent = `${live.toFixed(1)} s`;
+      this._latency.hidden = false;
+    }, 1000);
   }
 
   _syncPtz(state) {
@@ -200,11 +256,9 @@ class XiaomiDirectCameraCard extends HTMLElement {
     this._endPtz();
     this._ptzButtons[direction]?.setAttribute("data-active", "true");
     this._stepPtz(direction);
-    // A short hold keeps sending single steps; the camera protocol has no
-    // continuous-move command, so this is the closest to live panning.
     this._ptzHold = setTimeout(() => {
-      this._ptzRepeat = setInterval(() => this._stepPtz(direction), 260);
-    }, 520);
+      this._ptzRepeat = setInterval(() => this._stepPtz(direction), PTZ_HOLD_INTERVAL);
+    }, PTZ_HOLD_DELAY);
   }
 
   _endPtz() {
@@ -218,7 +272,6 @@ class XiaomiDirectCameraCard extends HTMLElement {
   }
 
   async _stepPtz(direction) {
-    // One in-flight step at a time: a slow camera must not build a backlog.
     if (this._ptzBusy || !this._hass || !this._config) return;
     this._ptzBusy = true;
     try {
@@ -244,226 +297,6 @@ class XiaomiDirectCameraCard extends HTMLElement {
       this._ptzErrorTimer = setTimeout(() => { this._ptzError.textContent = ""; }, 4000);
     }
   }
-
-  _bindVolumeIcon() {
-    const video = this._camera?.video || this._camera?.shadowRoot?.querySelector("video");
-    if (video && video !== this._volumeVideo) {
-      this._volumeVideo?.removeEventListener("loadeddata", this._volumeSyncHandler);
-      this._volumeVideo?.removeEventListener("volumechange", this._volumeSyncHandler);
-      this._volumeVideo = video;
-      video.addEventListener("loadeddata", this._volumeSyncHandler);
-      video.addEventListener("volumechange", this._volumeSyncHandler);
-    }
-    this._syncVolume();
-  }
-
-  _syncVolume() {
-    const video = this._volumeVideo;
-    const volume = this._camera?.shadowRoot?.querySelector(".volume");
-    if (!video) return;
-    this._volumeSlider.disabled = !this._audioRequested && !this._camera.hasAudio;
-    this._volumeSlider.value = Math.round(video.volume * 100);
-    // WebRTC Camera renders its icon after applying the initial muted setting.
-    if (volume) volume.icon = video.muted ? "mdi:volume-mute" : "mdi:volume-high";
-  }
-
-  getCardSize() { return 6; }
-
-  disconnectedCallback() {
-    this._release();
-    this._endPtz();
-    document.removeEventListener("visibilitychange", this._visibility);
-    this._volumeVideo?.removeEventListener("loadeddata", this._volumeSyncHandler);
-    this._volumeVideo?.removeEventListener("volumechange", this._volumeSyncHandler);
-    this._volumeVideo = undefined;
-  }
-
-  _press(event) {
-    event.preventDefault();
-    try { this._button.setPointerCapture(event.pointerId); } catch (_) { /* capture is optional */ }
-    this._beginTalk();
-  }
-
-  _beginTalk() {
-    if (this._pressed || this._button.disabled || !this._hass) return;
-    this._pressed = true;
-    this._button.setAttribute("aria-pressed", "true");
-    this._status.textContent = "Připojuji mikrofon…";
-    this._startPromise = this._startTalkback();
-  }
-
-  async _startTalkback() {
-    let session;
-    try {
-      if (!window.isSecureContext) throw new Error("Mikrofon prohlížeče vyžaduje HTTPS nebo localhost");
-      if (!navigator.mediaDevices?.getUserMedia || typeof AudioEncoder === "undefined" ||
-          typeof MediaStreamTrackProcessor === "undefined") {
-        throw new Error("Tento prohlížeč neumí otevřít Opus talkback");
-      }
-      const config = {
-        codec: "opus", sampleRate: 48000, numberOfChannels: 1,
-        bitrate: 24000, opus: { application: "voip" },
-      };
-      const support = await AudioEncoder.isConfigSupported(config);
-      if (!support.supported) throw new Error("Prohlížeč nemá Opus encoder pro C701");
-
-      this._stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: { ideal: 1 }, sampleRate: { ideal: 48000 },
-          echoCancellation: true, noiseSuppression: true, autoGainControl: true,
-        },
-      });
-      const track = this._stream.getAudioTracks()[0];
-      const settings = track?.getSettings?.() || {};
-      if (!track || (settings.sampleRate && settings.sampleRate !== 48000) ||
-          (settings.channelCount && settings.channelCount !== 1)) {
-        throw new Error("Mikrofon musí poskytovat mono zvuk 48 kHz");
-      }
-
-      session = await this._hass.callWS({
-        type: "xiaomi_direct_pilot/talkback/start",
-        entity_id: this._config.entity,
-      });
-      this._sessionId = session.session_id;
-      this._encoder = new AudioEncoder({
-        output: (chunk) => this._onEncoded(chunk),
-        error: (error) => this._fail(error),
-      });
-      this._encoder.configure(config);
-      const processor = new MediaStreamTrackProcessor({ track });
-      this._reader = processor.readable.getReader();
-      this._captureTask = this._captureAudio();
-      this._status.textContent = "Mluvíš — pusť tlačítko pro ukončení";
-    } catch (error) {
-      this._status.textContent = error?.message || "Mikrofon se nepodařilo spustit";
-      this._pressed = false;
-      this._button.setAttribute("aria-pressed", "false");
-      await this._closeAudio();
-      if (session?.session_id) await this._stopSession(session.session_id);
-    }
-  }
-
-  async _captureAudio() {
-    let pending = new Float32Array(0);
-    let timestamp = Math.round(performance.now() * 1000);
-    try {
-      while (this._pressed && this._reader) {
-        const { value, done } = await this._reader.read();
-        if (done) break;
-        try {
-          if (value.sampleRate !== 48000 || value.numberOfChannels !== 1) {
-            throw new Error("Mikrofon musí poskytovat mono zvuk 48 kHz");
-          }
-          const samples = new Float32Array(value.numberOfFrames);
-          value.copyTo(samples, { planeIndex: 0, format: "f32-planar" });
-          const combined = new Float32Array(pending.length + samples.length);
-          combined.set(pending);
-          combined.set(samples, pending.length);
-          let offset = 0;
-          while (combined.length - offset >= 960 && this._pressed && this._encoder?.state === "configured") {
-            const frame = combined.slice(offset, offset + 960);
-            const audio = new AudioData({
-              format: "f32-planar", sampleRate: 48000, numberOfFrames: 960,
-              numberOfChannels: 1, timestamp, data: frame.buffer,
-            });
-            this._encoder.encode(audio);
-            audio.close();
-            offset += 960;
-            timestamp += 20000;
-          }
-          pending = combined.slice(offset);
-        } finally {
-          value.close();
-        }
-      }
-    } catch (error) {
-      if (this._pressed) this._fail(error);
-    }
-  }
-
-  _onEncoded(chunk) {
-    if (!this._sessionId || this._closed) return;
-    const bytes = new Uint8Array(chunk.byteLength);
-    chunk.copyTo(bytes);
-    let binary = "";
-    for (const byte of bytes) binary += String.fromCharCode(byte);
-    this._encodedFrames.push(btoa(binary));
-    if (this._encodedFrames.length >= 2) this._sendFrames(2);
-  }
-
-  _sendFrames(count) {
-    if (!this._sessionId || !this._encodedFrames.length) return;
-    if (this._pendingBatches >= 3) {
-      this._fail(new Error("Přenos talkback nestíhá; mikrofon se bezpečně vypíná"));
-      return;
-    }
-    const frames = this._encodedFrames.splice(0, count);
-    this._pendingBatches += 1;
-    const sessionId = this._sessionId;
-    this._sendQueue = this._sendQueue.then(() => this._hass.callWS({
-      type: "xiaomi_direct_pilot/talkback/audio", session_id: sessionId, frames,
-    })).catch((error) => {
-      this._status.textContent = error?.message || "Přenos do reproduktoru C701 selhal";
-      this._pressed = false;
-      this._button.setAttribute("aria-pressed", "false");
-      setTimeout(() => this._release(), 0);
-    }).finally(() => { this._pendingBatches -= 1; });
-  }
-
-  _fail(error) {
-    this._status.textContent = error?.message || "Přenos do reproduktoru C701 selhal";
-    this._pressed = false;
-    this._button.setAttribute("aria-pressed", "false");
-    this._release();
-  }
-
-  _release() {
-    if (!this._releasePromise) {
-      this._releasePromise = this._finishTalkback().finally(() => { this._releasePromise = undefined; });
-    }
-    return this._releasePromise;
-  }
-
-  async _finishTalkback() {
-    if (this._closed) return;
-    if (!this._pressed && !this._sessionId && !this._stream) return;
-    this._pressed = false;
-    this._button.setAttribute("aria-pressed", "false");
-    const started = this._startPromise;
-    if (started) await started;
-    const sessionId = this._sessionId;
-    try { await this._reader?.cancel(); } catch (_) { /* already stopped */ }
-    for (const track of this._stream?.getTracks?.() || []) track.stop();
-    try { await this._captureTask; } catch (_) { /* capture was interrupted */ }
-    if (this._encoder?.state === "configured") {
-      try { await this._encoder.flush(); } catch (_) { /* encoder may have been interrupted */ }
-    }
-    this._sendFrames(4);
-    await this._sendQueue;
-    await this._closeAudio();
-    if (sessionId) await this._stopSession(sessionId);
-    this._status.textContent = "Talkback ukončen";
-    this._startPromise = undefined;
-  }
-
-  async _closeAudio() {
-    this._closed = true;
-    try { await this._reader?.cancel(); } catch (_) { /* already stopped */ }
-    this._reader = undefined;
-    try { this._encoder?.close(); } catch (_) { /* already closed */ }
-    this._encoder = undefined;
-    for (const track of this._stream?.getTracks?.() || []) track.stop();
-    this._stream = undefined;
-    this._captureTask = undefined;
-    this._closed = false;
-  }
-
-  async _stopSession(sessionId) {
-    this._sessionId = undefined;
-    try {
-      await this._hass.callWS({ type: "xiaomi_direct_pilot/talkback/stop", session_id: sessionId });
-    } catch (_) { /* HA disconnect cleanup and server deadman also stop the speaker */ }
-  }
 }
 
 if (!customElements.get("xiaomi-direct-camera")) {
@@ -471,4 +304,9 @@ if (!customElements.get("xiaomi-direct-camera")) {
 }
 
 window.customCards = window.customCards || [];
-window.customCards.push({ type: "xiaomi-direct-camera", name: "Xiaomi Direct camera with talkback", preview: false });
+window.customCards.push({
+  type: "xiaomi-direct-camera",
+  name: "Xiaomi Direct camera",
+  description: "Live camera with a PTZ pad, streaming over low-latency HLS.",
+  preview: false,
+});

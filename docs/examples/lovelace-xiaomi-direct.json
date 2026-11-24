@@ -14,65 +14,27 @@
             {
               "type": "custom:xiaomi-direct-camera",
               "entity": "camera.xiaomi_c701_direct",
-              "title": "Xiaomi C701 Direct",
-              "mode": "mse",
-              "media": "video,audio",
-              "muted": true,
-              "ui": true,
-              "background": false,
-              "intersection": 0.05,
-              "style": "video {aspect-ratio: 16/9; object-fit: contain}"
+              "name": "Xiaomi C701 Direct"
             },
             {
-              "type": "custom:webrtc-camera",
+              "type": "custom:xiaomi-direct-camera",
               "entity": "camera.mi_360deg_camera_1080p_direct",
-              "title": "Mi 360° Camera (1080p) Direct",
-              "mode": "webrtc,mse",
-              "media": "video",
-              "muted": true,
-              "ui": true,
-              "background": false,
-              "intersection": 0.05,
-              "style": "video {aspect-ratio: 16/9; object-fit: contain}"
+              "name": "Mi 360° Camera (1080p) Direct"
             },
             {
               "type": "custom:xiaomi-direct-camera",
               "entity": "camera.outdoor_ulice_direct",
-              "title": "Outdoor ulice Direct",
-              "mode": "mse",
-              "media": "video,audio",
-              "muted": true,
-              "ui": true,
-              "background": false,
-              "intersection": 0.05,
-              "style": "video {aspect-ratio: 16/9; object-fit: contain} .shortcuts {left: unset; right: 8px; top: 32px}",
-              "push_to_talk": false
+              "name": "Outdoor ulice Direct"
             },
             {
               "type": "custom:xiaomi-direct-camera",
               "entity": "camera.xiaomi_c201_direct",
-              "title": "Xiaomi C201 Direct",
-              "mode": "mse",
-              "media": "video,audio",
-              "muted": true,
-              "ui": true,
-              "background": false,
-              "intersection": 0.05,
-              "style": "video {aspect-ratio: 16/9; object-fit: contain}",
-              "push_to_talk": false
+              "name": "Xiaomi C201 Direct"
             },
             {
               "type": "custom:xiaomi-direct-camera",
               "entity": "camera.xiaomi_smart_camera_c400_direct",
-              "title": "Xiaomi Smart Camera C400 Direct",
-              "mode": "mse",
-              "media": "video,audio",
-              "muted": true,
-              "ui": true,
-              "background": false,
-              "intersection": 0.05,
-              "style": "video {aspect-ratio: 16/9; object-fit: contain}",
-              "push_to_talk": false
+              "name": "Xiaomi Smart Camera C400 Direct"
             }
           ]
         }
