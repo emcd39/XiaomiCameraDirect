@@ -225,6 +225,9 @@ async def list_cameras(acc, account, mock):
         return
     for item in items:
         print(f"  {item.get('model', '?')}  {item.get('name', '?')}  did={item.get('did', '?')}")
+        if ".camera." in str(item.get("model", "")):
+            print("      lan fields: " + json.dumps({k: item.get(k) for k in
+                  ("localip", "mac", "ip", "lanIp", "local_ip") if k in item}, ensure_ascii=False))
 
 
 async def run(args, acc):
