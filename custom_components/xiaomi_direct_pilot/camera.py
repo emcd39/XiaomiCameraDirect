@@ -26,6 +26,12 @@ from .xiaomi_direct.h264_video import H264Video
 # most of the delay between the camera and the picture. Shortening it from the
 # one second default brings a step of the PTZ pad close to live.
 LOW_LATENCY_PART = 0.3
+# Home Assistant's own non-low-latency target is 2.0 s and it subtracts 0.1 s
+# to stay off a keyframe boundary. A short part is not enough on its own: when
+# the player drops back to whole segments it waits for a segment, and with the
+# 6 s default that is the 1-5 s swing this camera used to show.
+LOW_LATENCY_SEGMENT = 2.0
+SEGMENT_ADJUSTER = 0.1
 STREAM_DOMAIN = "stream"
 # Mirrors homeassistant.components.stream.const.ATTR_SETTINGS.
 STREAM_SETTINGS_KEY = "settings"
@@ -247,6 +253,7 @@ class DirectCamera(Camera):
         try:
             tightened = replace(
                 settings,
+                min_segment_duration=LOW_LATENCY_SEGMENT - SEGMENT_ADJUSTER,
                 part_target_duration=LOW_LATENCY_PART,
                 # Home Assistant derives these two from the part length.
                 hls_advance_part_limit=max(int(3 / LOW_LATENCY_PART), 3),
