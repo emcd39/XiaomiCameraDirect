@@ -25,7 +25,9 @@ Assistant to the cameras.
    a mapped directional profile and become available during a live session.
    The bundled card draws its own D-pad over the video for those cameras: tap
    for one step, hold to keep stepping, and set `ptz: false` on the card to
-   hide it. A camera without a mapped driver never shows the pad.
+   hide it. The pad stays dimmed and disabled until the live stream is open; a
+   camera without a mapped driver never shows it. The card's own labels and
+   errors are in Chinese.
    For a C400 in the European region, select the camera under **C400 cameras
    to stream at lower resolution** to reduce bandwidth. Saving reloads the
    account entry and applies the selected profile when the stream next opens.

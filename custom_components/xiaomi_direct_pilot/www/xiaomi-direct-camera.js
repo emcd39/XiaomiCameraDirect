@@ -8,9 +8,26 @@ const HLS_CONFIG = {
   maxLiveSyncPlaybackRate: 1.3,
   enableWorker: true,
 };
+// Fallback for a frontend without hassUrl; normally resolved against it so a
+// reverse proxy under a path prefix still finds the player.
 const HLS_SCRIPT = "/xiaomi-direct/hls.light.min.js";
+const RETRY_DELAY = 6000;
 const PTZ_HOLD_DELAY = 520;
 const PTZ_HOLD_INTERVAL = 260;
+const PTZ_TIMEOUT = 4000;
+// The websocket command answers in English; the card is not the place for it.
+const PTZ_ERRORS = {
+  ptz_unavailable: "请先打开实时画面，再操作云台",
+  ptz_failed: "云台没有响应，请稍后再试",
+};
+
+function withTimeout(promise, ms, message) {
+  let timer;
+  const timeout = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
 class XiaomiDirectCameraCard extends HTMLElement {
   constructor() {
@@ -20,7 +37,9 @@ class XiaomiDirectCameraCard extends HTMLElement {
     this._hls = undefined;
     this._hlsLoader = undefined;
     this._starting = false;
+    this._retryPending = false;
     this._ptzEnabled = true;
+    this._ptzLive = undefined;
     this._showLatency = true;
     this._ptzButtons = {};
     this._ptzBusy = false;
@@ -57,7 +76,7 @@ class XiaomiDirectCameraCard extends HTMLElement {
           color: #fff; cursor: pointer; touch-action: none; }
         .ptz button[data-active="true"] { background: var(--primary-color);
           border-color: var(--primary-color); }
-        .ptz[data-live="false"] button { opacity: .55; }
+        .ptz[data-live="false"] button { opacity: .55; cursor: default; }
         .ptz-up { grid-area: 1 / 2; }
         .ptz-left { grid-area: 2 / 1; }
         .ptz-right { grid-area: 2 / 3; }
@@ -72,10 +91,10 @@ class XiaomiDirectCameraCard extends HTMLElement {
         <span class="latency" hidden></span>
         <div class="overlay" hidden>正在连接…</div>
         <div class="ptz" hidden>
-          <button type="button" class="ptz-up" aria-label="Nahoru"><ha-icon icon="mdi:chevron-up"></ha-icon></button>
-          <button type="button" class="ptz-left" aria-label="Vlevo"><ha-icon icon="mdi:chevron-left"></ha-icon></button>
-          <button type="button" class="ptz-right" aria-label="Vpravo"><ha-icon icon="mdi:chevron-right"></ha-icon></button>
-          <button type="button" class="ptz-down" aria-label="Dolů"><ha-icon icon="mdi:chevron-down"></ha-icon></button>
+          <button type="button" class="ptz-up" aria-label="向上"><ha-icon icon="mdi:chevron-up"></ha-icon></button>
+          <button type="button" class="ptz-left" aria-label="向左"><ha-icon icon="mdi:chevron-left"></ha-icon></button>
+          <button type="button" class="ptz-right" aria-label="向右"><ha-icon icon="mdi:chevron-right"></ha-icon></button>
+          <button type="button" class="ptz-down" aria-label="向下"><ha-icon icon="mdi:chevron-down"></ha-icon></button>
           <span class="ptz-error" role="status" aria-live="polite"></span>
         </div>
       </div>`;
@@ -108,6 +127,9 @@ class XiaomiDirectCameraCard extends HTMLElement {
 
   connectedCallback() {
     document.addEventListener("visibilitychange", this._visibility);
+    // A card that comes back must not inherit the backoff of its last failure.
+    clearTimeout(this._retryTimer);
+    this._retryPending = false;
     this._maybeStart();
     this._tickLatency();
   }
@@ -118,10 +140,14 @@ class XiaomiDirectCameraCard extends HTMLElement {
     this._teardownHls();
     clearInterval(this._latencyTimer);
     clearTimeout(this._retryTimer);
+    this._retryPending = false;
   }
 
   setConfig(config) {
     if (!config.entity) throw new Error("Xiaomi Direct card requires an entity");
+    // Switching the entity in the card editor must replace the player instead
+    // of leaving the previous camera on screen.
+    const entityChanged = this._config?.entity !== config.entity;
     this._config = { ...config };
     this._ptzEnabled = config.ptz !== false;
     this._showLatency = config.latency_indicator !== false;
@@ -129,7 +155,13 @@ class XiaomiDirectCameraCard extends HTMLElement {
       this._ptz.hidden = true;
       this._endPtz();
     }
-    this._maybeStart();
+    if (entityChanged) {
+      this._showPtzError("");
+      this._overlay.textContent = "正在连接…";
+      this._maybeStart(true);
+    } else {
+      this._maybeStart();
+    }
     this._tickLatency();
   }
 
@@ -144,9 +176,20 @@ class XiaomiDirectCameraCard extends HTMLElement {
   }
 
   _maybeStart(force = false) {
-    if (this._hls && !force) return;
-    if (force) this._teardownHls();
-    if (!this._hass || !this._config || this._starting) return;
+    if (!this.isConnected) return;
+    if (force) {
+      // An explicit restart ignores the pending retry and replaces the player.
+      this._retryPending = false;
+      clearTimeout(this._retryTimer);
+      this._retryTimer = undefined;
+      this._teardownHls();
+    } else if (this._retryPending) {
+      // A retry is already scheduled. hass arrives several times a second and
+      // used to restart a failed stream immediately, defeating the backoff.
+      return;
+    }
+    if (this._hls || this._starting) return;
+    if (!this._hass || !this._config) return;
     this._start();
   }
 
@@ -181,7 +224,9 @@ class XiaomiDirectCameraCard extends HTMLElement {
     if (!this._hlsLoader) {
       this._hlsLoader = new Promise((resolve, reject) => {
         const script = document.createElement("script");
-        script.src = HLS_SCRIPT;
+        // hassUrl keeps this working when Home Assistant sits behind a path
+        // prefix; the constant is only a fallback for a stripped-down hass.
+        script.src = this._hass?.hassUrl?.(HLS_SCRIPT) || HLS_SCRIPT;
         script.async = true;
         script.onload = () => (window.Hls ? resolve(window.Hls) : reject(new Error("hls.js 未初始化")));
         script.onerror = () => reject(new Error("无法加载 hls.js"));
@@ -208,11 +253,15 @@ class XiaomiDirectCameraCard extends HTMLElement {
   }
 
   _fail(error) {
-    this._overlay.textContent = error?.message || "视频流无法播放";
-    this._overlay.hidden = false;
     this._teardownHls();
     clearTimeout(this._retryTimer);
-    this._retryTimer = setTimeout(() => this._maybeStart(true), 6000);
+    this._retryTimer = undefined;
+    // A failure that lands after the card left the DOM must not schedule work.
+    if (!this.isConnected) return;
+    this._overlay.textContent = error?.message || "视频流无法播放";
+    this._overlay.hidden = false;
+    this._retryPending = true;
+    this._retryTimer = setTimeout(() => this._maybeStart(true), RETRY_DELAY);
   }
 
   _teardownHls() {
@@ -234,7 +283,8 @@ class XiaomiDirectCameraCard extends HTMLElement {
         this._latency.hidden = true;
         return;
       }
-      const live = video.buffered.end(video.buffered.length - 1) - video.currentTime;
+      // The edge can sit behind the playhead right after a manifest reload.
+      const live = Math.max(0, video.buffered.end(video.buffered.length - 1) - video.currentTime);
       this._latency.textContent = `${live.toFixed(1)} s`;
       this._latency.hidden = false;
     }, 1000);
@@ -245,13 +295,20 @@ class XiaomiDirectCameraCard extends HTMLElement {
     const directions = Array.isArray(attributes.ptz_directions) ? attributes.ptz_directions : [];
     const visible = this._ptzEnabled && directions.length > 0 && state?.state !== "unavailable";
     if (this._ptz.hidden !== !visible) this._ptz.hidden = !visible;
-    this._ptz.setAttribute("data-live", attributes.ptz_enabled === true ? "true" : "false");
-    if (!visible) this._endPtz();
+    const live = visible && attributes.ptz_enabled === true;
+    if (this._ptzLive !== live) {
+      // hass is replaced on every state change in Home Assistant, so only
+      // touch the DOM when the value actually moved.
+      this._ptzLive = live;
+      this._ptz.setAttribute("data-live", live ? "true" : "false");
+      for (const button of Object.values(this._ptzButtons)) button.disabled = !live;
+    }
+    if (!live) this._endPtz();
   }
 
   _beginPtz(direction, event) {
     event?.preventDefault?.();
-    if (this._ptz.hidden || !this._hass) return;
+    if (this._ptz.hidden || !this._hass || this._ptzLive !== true) return;
     try { event?.currentTarget?.setPointerCapture?.(event.pointerId); } catch (_) { /* optional */ }
     this._endPtz();
     this._ptzButtons[direction]?.setAttribute("data-active", "true");
@@ -275,14 +332,15 @@ class XiaomiDirectCameraCard extends HTMLElement {
     if (this._ptzBusy || !this._hass || !this._config) return;
     this._ptzBusy = true;
     try {
-      await this._hass.callWS({
+      // A stuck websocket would otherwise leave the pad dead until a reload.
+      await withTimeout(this._hass.callWS({
         type: "xiaomi_direct_pilot/ptz/step",
         entity_id: this._config.entity,
         direction,
-      });
+      }), PTZ_TIMEOUT, "云台请求超时");
       this._showPtzError("");
     } catch (error) {
-      this._showPtzError(error?.message || "Pohyb kamery se nepodařil");
+      this._showPtzError(PTZ_ERRORS[error?.code] || error?.message || "云台操作失败");
       this._endPtz();
     } finally {
       this._ptzBusy = false;
@@ -306,7 +364,7 @@ if (!customElements.get("xiaomi-direct-camera")) {
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: "xiaomi-direct-camera",
-  name: "Xiaomi Direct camera",
-  description: "Live camera with a PTZ pad, streaming over low-latency HLS.",
+  name: "Xiaomi 摄像头直连",
+  description: "低延迟 HLS 直播，带云台方向盘与延迟角标。",
   preview: false,
 });

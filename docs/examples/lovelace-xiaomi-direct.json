@@ -1,9 +1,9 @@
 {
-  "title": "Xiaomi přímo",
+  "title": "小米摄像头直连",
   "views": [
     {
-      "title": "Kamery",
-      "path": "kamery",
+      "title": "摄像头",
+      "path": "cameras",
       "panel": true,
       "cards": [
         {

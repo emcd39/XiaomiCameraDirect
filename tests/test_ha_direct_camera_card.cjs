@@ -102,7 +102,7 @@ function cameraState({ ptz = true, live = true, state = "streaming" } = {}) {
   };
 }
 
-async function setUpCard(config = {}, { withHls = true } = {}) {
+async function setUpCard(config = {}, { withHls = true, hassUrl } = {}) {
   FakeHls.instances = [];
   const elements = new Map();
   const calls = [];
@@ -152,6 +152,7 @@ async function setUpCard(config = {}, { withHls = true } = {}) {
   const card = new Card();
   card.setConfig({ entity: "camera.test_direct", ...config });
   const hass = {
+    ...(hassUrl ? { hassUrl } : {}),
     states: { "camera.test_direct": cameraState() },
     async callWS(message) {
       calls.push(message);
@@ -256,22 +257,37 @@ test("holding a direction repeats the step and stops on release", async () => {
   assert.equal(calls.filter((call) => call.direction === "up").length, 2);
 });
 
-test("a rejected step shows the message and stops the hold", async () => {
+test("a rejected step shows a Chinese hint for the error code and stops the hold", async () => {
   const { elements, clock, hass } = await setUpCard();
   hass.callWS = async (message) => {
     if (message.type === "xiaomi_direct_pilot/ptz/step") {
-      throw new Error("Open the camera's live stream first");
+      // Home Assistant rejects with a code; the message itself is English.
+      throw Object.assign(new Error("Open the camera's live stream first"), {
+        code: "ptz_unavailable",
+      });
     }
     return { url: "/api/hls/tok/master_playlist.m3u8" };
   };
   const right = elements.get(".ptz-right");
   right.fire("pointerdown", {});
   await flush();
-  assert.match(elements.get(".ptz-error").textContent, /live stream/);
+  assert.match(elements.get(".ptz-error").textContent, /先打开实时画面/);
   assert.equal(right.attrs["data-active"], "false");
 
   clock.advance(4500);
   assert.equal(elements.get(".ptz-error").textContent, "");
+});
+
+test("an unknown step failure still shows a Chinese fallback", async () => {
+  const { elements, hass } = await setUpCard();
+  hass.callWS = async (message) => {
+    if (message.type === "xiaomi_direct_pilot/ptz/step") throw new Error("socket closed");
+    return { url: "/api/hls/tok/master_playlist.m3u8" };
+  };
+  elements.get(".ptz-left").fire("pointerdown", {});
+  await flush();
+  // The raw reason is kept as a fallback, but never the Czech text of old.
+  assert.doesNotMatch(elements.get(".ptz-error").textContent, /Pohyb/);
 });
 
 test("a fatal hls error shows the reason and schedules a retry", async () => {
@@ -300,4 +316,86 @@ test("disconnecting stops the stream and the timers", async () => {
   card.disconnectedCallback();
   assert.equal(hls.destroyed, true);
   assert.equal(clock.pending, 0);
+});
+
+test("a failed stream waits for the retry instead of restarting on every hass update", async () => {
+  const { card, clock, hass, calls } = await setUpCard();
+  const streamCalls = () => calls.filter((call) => call.type === "camera/stream").length;
+  assert.equal(streamCalls(), 1);
+
+  FakeHls.instances.at(-1).emit("hlsError", {
+    fatal: true, type: "otherError", details: "bufferStalledError",
+  });
+
+  // Home Assistant replaces hass several times a second; none of those may
+  // restart a stream that is already backing off.
+  for (let index = 0; index < 5; index += 1) {
+    card.hass = hass;
+    await flush();
+  }
+  assert.equal(FakeHls.instances.length, 1);
+  assert.equal(streamCalls(), 1);
+
+  clock.advance(6000);
+  await flush();
+  assert.equal(FakeHls.instances.length, 2, "the scheduled retry still runs");
+  assert.equal(streamCalls(), 2);
+});
+
+test("changing the entity replaces the player instead of keeping the old camera", async () => {
+  const { card, calls, clock } = await setUpCard();
+  const first = FakeHls.instances.at(-1);
+
+  card.setConfig({ entity: "camera.other_direct" });
+  await flush();
+
+  assert.equal(first.destroyed, true);
+  assert.equal(FakeHls.instances.length, 2);
+  assert.equal(FakeHls.instances.at(-1).media, first.media, "the new player uses the same element");
+  const stream = calls.filter((call) => call.type === "camera/stream").at(-1);
+  assert.equal(stream.entity_id, "camera.other_direct");
+  assert.equal(clock.pending > 0, true);
+});
+
+test("a failure after the card was removed schedules no retry", async () => {
+  const { card, clock } = await setUpCard();
+  const hls = FakeHls.instances.at(-1);
+  card.isConnected = false;
+  card.disconnectedCallback();
+
+  hls.emit("hlsError", { fatal: true, type: "otherError", details: "bufferStalledError" });
+
+  assert.equal(clock.pending, 0);
+  assert.equal(card._retryPending, false);
+});
+
+test("the latency badge never shows a negative number", async () => {
+  const { elements, clock } = await setUpCard();
+  const video = elements.get("video");
+  video.currentTime = 12.4; // ahead of the buffered edge at 12
+  clock.advance(1000);
+  assert.equal(elements.get(".latency").textContent, "0.0 s");
+  assert.equal(elements.get(".latency").hidden, false);
+});
+
+test("the pad is disabled until the camera stream is open", async () => {
+  const { card, elements, hass, calls } = await setUpCard();
+  hass.states["camera.test_direct"] = cameraState({ live: false });
+  card.hass = hass;
+
+  const up = elements.get(".ptz-up");
+  assert.equal(up.disabled, true);
+  assert.equal(elements.get(".ptz").attrs["data-live"], "false");
+  up.fire("pointerdown", {});
+  await flush();
+  assert.equal(calls.filter((call) => call.direction === "up").length, 0);
+});
+
+test("hls.js is loaded through hassUrl so a path prefix still resolves", async () => {
+  const { head } = await setUpCard({}, {
+    withHls: false,
+    hassUrl: (path) => `/ha${path}`,
+  });
+  assert.equal(head.children.length, 1);
+  assert.equal(head.children[0].src, "/ha/xiaomi-direct/hls.light.min.js");
 });
