@@ -181,8 +181,23 @@ class DirectCamera(Camera):
         return True
 
     def _ptz_state_changed(self):
-        self._attr_extra_state_attributes["ptz_enabled"] = self._ptz.video is not None
+        # The signal can arrive on the media worker thread. Scheduling the
+        # write here keeps it on the event loop whatever the sender did.
+        self.hass.loop.call_soon_threadsafe(self._write_ptz_state)
+
+    def _write_ptz_state(self):
+        if self.hass is None:
+            return
         self.async_write_ha_state()
+
+    @property
+    def extra_state_attributes(self):
+        attributes = dict(self._attr_extra_state_attributes)
+        if self._ptz is not None:
+            # Read the live session instead of a stored flag, so the card sees
+            # the switch even if a state write was skipped.
+            attributes["ptz_enabled"] = self._ptz.video is not None
+        return attributes
 
     async def async_added_to_hass(self):
         if self._media:

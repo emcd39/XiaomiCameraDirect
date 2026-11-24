@@ -3,6 +3,7 @@
 import asyncio
 
 from homeassistant.components.button import ButtonEntity
+from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 
@@ -65,8 +66,14 @@ class DirectPTZButton(ButtonEntity):
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
         self.async_on_remove(async_dispatcher_connect(
-            self.hass, self._control.signal, self.async_write_ha_state,
+            self.hass, self._control.signal, self._signal,
         ))
+
+    @callback
+    def _signal(self):
+        # The control signals from the media worker thread; the entity state
+        # write has to happen on the event loop.
+        self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
 
     async def async_press(self):
         await self._control.press(self._direction)
