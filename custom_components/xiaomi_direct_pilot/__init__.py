@@ -12,6 +12,7 @@ from homeassistant.helpers import config_validation as cv
 from .button import PTZ_MODELS, PTZControl
 from .const import C201_MODEL, DOMAIN, NAME
 from .inventory import account_cameras, create_account, excluded_camera_ids, merge_refreshed_camera, resolve_cameras
+from .ptz_api import register_ptz_commands
 from .settings import C201SettingsCoordinator
 from .xiaomi_direct.account import AccountAuthorizationError, AccountError, create_client_session
 from .xiaomi_direct.talkback_api import async_stop_talkback_for_sources, register_talkback_commands
@@ -38,6 +39,7 @@ async def async_setup(hass, config):
     data.setdefault("talkback_media", {})
     data.setdefault("talkback_sessions", {})
     register_talkback_commands(hass)
+    register_ptz_commands(hass)
 
     card_path = Path(__file__).parent / "www" / "xiaomi-direct-camera.js"
     await hass.http.async_register_static_paths([

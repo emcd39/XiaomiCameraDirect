@@ -21,41 +21,7 @@
               "ui": true,
               "background": false,
               "intersection": 0.05,
-              "style": "video {aspect-ratio: 16/9; object-fit: contain} .shortcuts {left: unset; right: 8px; top: 32px}",
-              "shortcuts": [
-                {
-                  "name": "Vlevo",
-                  "icon": "mdi:arrow-left",
-                  "service": "button.press",
-                  "service_data": {
-                    "entity_id": "button.xiaomi_c701_direct_ptz_left"
-                  }
-                },
-                {
-                  "name": "Vpravo",
-                  "icon": "mdi:arrow-right",
-                  "service": "button.press",
-                  "service_data": {
-                    "entity_id": "button.xiaomi_c701_direct_ptz_right"
-                  }
-                },
-                {
-                  "name": "Nahoru",
-                  "icon": "mdi:arrow-up",
-                  "service": "button.press",
-                  "service_data": {
-                    "entity_id": "button.xiaomi_c701_direct_ptz_up"
-                  }
-                },
-                {
-                  "name": "Dolů",
-                  "icon": "mdi:arrow-down",
-                  "service": "button.press",
-                  "service_data": {
-                    "entity_id": "button.xiaomi_c701_direct_ptz_down"
-                  }
-                }
-              ]
+              "style": "video {aspect-ratio: 16/9; object-fit: contain}"
             },
             {
               "type": "custom:webrtc-camera",
@@ -67,41 +33,7 @@
               "ui": true,
               "background": false,
               "intersection": 0.05,
-              "style": "video {aspect-ratio: 16/9; object-fit: contain} .shortcuts {left: unset; right: 8px; top: 32px}",
-              "shortcuts": [
-                {
-                  "name": "Vlevo",
-                  "icon": "mdi:arrow-left",
-                  "service": "button.press",
-                  "service_data": {
-                    "entity_id": "button.mi_360deg_camera_1080p_direct_ptz_left"
-                  }
-                },
-                {
-                  "name": "Vpravo",
-                  "icon": "mdi:arrow-right",
-                  "service": "button.press",
-                  "service_data": {
-                    "entity_id": "button.mi_360deg_camera_1080p_direct_ptz_right"
-                  }
-                },
-                {
-                  "name": "Nahoru",
-                  "icon": "mdi:arrow-up",
-                  "service": "button.press",
-                  "service_data": {
-                    "entity_id": "button.mi_360deg_camera_1080p_direct_ptz_up"
-                  }
-                },
-                {
-                  "name": "Dolů",
-                  "icon": "mdi:arrow-down",
-                  "service": "button.press",
-                  "service_data": {
-                    "entity_id": "button.mi_360deg_camera_1080p_direct_ptz_down"
-                  }
-                }
-              ]
+              "style": "video {aspect-ratio: 16/9; object-fit: contain}"
             },
             {
               "type": "custom:xiaomi-direct-camera",
@@ -126,41 +58,7 @@
               "ui": true,
               "background": false,
               "intersection": 0.05,
-              "style": "video {aspect-ratio: 16/9; object-fit: contain} .shortcuts {left: unset; right: 8px; top: 32px}",
-              "shortcuts": [
-                {
-                  "name": "Vlevo",
-                  "icon": "mdi:arrow-left",
-                  "service": "button.press",
-                  "service_data": {
-                    "entity_id": "button.xiaomi_c201_direct_ptz_left"
-                  }
-                },
-                {
-                  "name": "Vpravo",
-                  "icon": "mdi:arrow-right",
-                  "service": "button.press",
-                  "service_data": {
-                    "entity_id": "button.xiaomi_c201_direct_ptz_right"
-                  }
-                },
-                {
-                  "name": "Nahoru",
-                  "icon": "mdi:arrow-up",
-                  "service": "button.press",
-                  "service_data": {
-                    "entity_id": "button.xiaomi_c201_direct_ptz_up"
-                  }
-                },
-                {
-                  "name": "Dolů",
-                  "icon": "mdi:arrow-down",
-                  "service": "button.press",
-                  "service_data": {
-                    "entity_id": "button.xiaomi_c201_direct_ptz_down"
-                  }
-                }
-              ],
+              "style": "video {aspect-ratio: 16/9; object-fit: contain}",
               "push_to_talk": false
             },
             {
@@ -173,41 +71,7 @@
               "ui": true,
               "background": false,
               "intersection": 0.05,
-              "style": "video {aspect-ratio: 16/9; object-fit: contain} .shortcuts {left: unset; right: 8px; top: 32px}",
-              "shortcuts": [
-                {
-                  "name": "Vlevo",
-                  "icon": "mdi:arrow-left",
-                  "service": "button.press",
-                  "service_data": {
-                    "entity_id": "button.xiaomi_smart_camera_c400_direct_ptz_left"
-                  }
-                },
-                {
-                  "name": "Vpravo",
-                  "icon": "mdi:arrow-right",
-                  "service": "button.press",
-                  "service_data": {
-                    "entity_id": "button.xiaomi_smart_camera_c400_direct_ptz_right"
-                  }
-                },
-                {
-                  "name": "Nahoru",
-                  "icon": "mdi:arrow-up",
-                  "service": "button.press",
-                  "service_data": {
-                    "entity_id": "button.xiaomi_smart_camera_c400_direct_ptz_up"
-                  }
-                },
-                {
-                  "name": "Dolů",
-                  "icon": "mdi:arrow-down",
-                  "service": "button.press",
-                  "service_data": {
-                    "entity_id": "button.xiaomi_smart_camera_c400_direct_ptz_down"
-                  }
-                }
-              ],
+              "style": "video {aspect-ratio: 16/9; object-fit: contain}",
               "push_to_talk": false
             }
           ]

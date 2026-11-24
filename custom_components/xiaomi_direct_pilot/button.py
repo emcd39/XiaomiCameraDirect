@@ -6,7 +6,7 @@ from homeassistant.components.button import ButtonEntity
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 
-from .const import C701_MODEL, PTZ2K_MODEL, PTZ3_MODEL
+from .const import C701_MODEL, PTZ2K_MODEL, PTZ3_MODEL, PTZ_OPERATIONS
 from .inventory import camera_device_info
 from .xiaomi_direct.cs2_tcp import CS2Error
 
@@ -15,7 +15,6 @@ PTZ_MODELS = frozenset({
     "xiaomi.camera.c201", "chuangmi.camera.039a04", "chuangmi.camera.026c02", C701_MODEL,
     PTZ2K_MODEL, PTZ3_MODEL,
 })
-OPERATIONS = {"left": 1, "right": 2, "up": 3, "down": 4}
 
 
 class PTZControl:
@@ -38,7 +37,7 @@ class PTZControl:
                 async with self._lock:
                     if self.video is not video:
                         raise HomeAssistantError("Camera stream restarted; press the direction again")
-                    await video.step(OPERATIONS[direction])
+                    await video.step(PTZ_OPERATIONS[direction])
         except (CS2Error, OSError, TimeoutError):
             raise HomeAssistantError("Camera did not confirm that the PTZ command was sent") from None
 
@@ -71,5 +70,5 @@ async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities([
         DirectPTZButton(item, direction, runtime.ptz[item["device_id"]])
         for item in runtime.cameras if item["device_id"] in runtime.ptz
-        for direction in OPERATIONS
+        for direction in PTZ_OPERATIONS
     ])

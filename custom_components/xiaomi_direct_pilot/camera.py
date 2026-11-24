@@ -6,11 +6,12 @@ from ipaddress import IPv4Address, IPv4Network
 from homeassistant.components.camera import Camera, CameraEntityFeature, PLATFORM_SCHEMA
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 import voluptuous as vol
 
 from .const import (
     AW300_AUDIO, AW300_MODEL, C201_AUDIO, C201_AUDIO_PROFILE, C201_MODEL, C400_AUDIO, C400_LOW_RESOLUTION, C400_MODEL,
-    C701_AUDIO, C701_MODEL, DOMAIN,
+    C701_AUDIO, C701_MODEL, DOMAIN, PTZ_OPERATIONS,
 )
 from .inventory import QUALITY, camera_device_info, create_account
 from .xiaomi_direct.account import AccountAuthorizationError, create_client_session
@@ -114,7 +115,10 @@ async def async_setup_entry(hass, entry, async_add_entities):
                 audio=audio,
                 talkback=(model == C701_MODEL and audio),
             )
-        entity = DirectCamera(item["name"], item["device_id"], model, media, quality, audio)
+        entity = DirectCamera(
+            item["name"], item["device_id"], model, media, quality, audio,
+            control=entry.runtime_data.ptz.get(item["device_id"]),
+        )
         entities.append(entity)
         if media is not None:
             entry.runtime_data.media_sources[entity.unique_id] = media
@@ -135,7 +139,7 @@ def _add_camera(hass, config, async_add_entities):
 
 
 class DirectCamera(Camera):
-    def __init__(self, name, device_id, model, media, quality, audio_enabled=False):
+    def __init__(self, name, device_id, model, media, quality, audio_enabled=False, control=None):
         super().__init__()
         self._attr_name = name
         identity = "c201" if model == C201_MODEL else "camera"
@@ -150,6 +154,12 @@ class DirectCamera(Camera):
         self._attr_extra_state_attributes["talkback_enabled"] = bool(
             audio_enabled and model == C701_MODEL and media is not None
         )
+        # The dashboard card renders its D-pad from these two attributes, so a
+        # camera without a mapped driver never shows buttons that cannot work.
+        self._ptz = control
+        if control is not None:
+            self._attr_extra_state_attributes["ptz_directions"] = list(PTZ_OPERATIONS)
+            self._attr_extra_state_attributes["ptz_enabled"] = control.video is not None
         if quality is not None:
             self._attr_extra_state_attributes["requested_video_profile"] = quality
         if media is None:
@@ -161,12 +171,20 @@ class DirectCamera(Camera):
     def use_stream_for_stills(self):
         return True
 
+    def _ptz_state_changed(self):
+        self._attr_extra_state_attributes["ptz_enabled"] = self._ptz.video is not None
+        self.async_write_ha_state()
+
     async def async_added_to_hass(self):
         if self._media:
             await self._media.start()
             self.async_on_remove(
                 self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, self._stop_media)
             )
+        if self._ptz is not None:
+            self.async_on_remove(async_dispatcher_connect(
+                self.hass, self._ptz.signal, self._ptz_state_changed,
+            ))
         await super().async_added_to_hass()
 
     async def _stop_media(self, _event):

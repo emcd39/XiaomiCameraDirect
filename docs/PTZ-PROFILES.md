@@ -27,6 +27,13 @@ separate observation for each model/firmware family.
   compatibility leads, not physical verification by this gateway.
 - No other model receives this driver automatically.
 
+The Home Assistant integration exposes the same driver twice: four `button.*_ptz_*`
+entities, and a `xiaomi_direct_pilot/ptz/step` WebSocket command that the bundled
+dashboard card calls from its own D-pad. Both paths go through `PTZControl`, so
+both refuse to move without an active local media session and neither retries a
+failed step. The card renders the pad only for camera entities whose state
+carries `ptz_directions`, and dims it while `ptz_enabled` is false.
+
 ## Add an unlisted Xiaomi model
 
 The inventory list returned by Xiaomi does not contain a PTZ-capable flag, so

@@ -19,6 +19,9 @@ Assistant to the cameras.
    cameras are included by default. Use the camera entity for live video,
    snapshots and short HA recordings. PTZ buttons appear for the models with
    a mapped directional profile and become available during a live session.
+   The bundled card draws its own D-pad over the video for those cameras: tap
+   for one step, hold to keep stepping, and set `ptz: false` on the card to
+   hide it. A camera without a mapped driver never shows the pad.
    For a C400 in the European region, select the camera under **C400 cameras
    to stream at lower resolution** to reduce bandwidth. Saving reloads the
    account entry and applies the selected profile when the stream next opens.

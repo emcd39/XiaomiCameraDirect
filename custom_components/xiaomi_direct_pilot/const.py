@@ -14,3 +14,4 @@ AW300_AUDIO = "aw300_audio"
 C400_LOW_RESOLUTION = "c400_low_resolution"
 PTZ2K_MODEL = "chuangmi.camera.029a02"
 PTZ3_MODEL = "chuangmi.camera.069a01"
+PTZ_OPERATIONS = {"left": 1, "right": 2, "up": 3, "down": 4}

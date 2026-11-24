@@ -12,6 +12,12 @@ class XiaomiDirectCameraCard extends HTMLElement {
     this._encodedFrames = [];
     this._pendingBatches = 0;
     this._closed = false;
+    this._ptzEnabled = true;
+    this._ptzButtons = {};
+    this._ptzBusy = false;
+    this._ptzHold = undefined;
+    this._ptzRepeat = undefined;
+    this._ptzErrorTimer = undefined;
 
     const root = this.attachShadow({ mode: "open" });
     root.innerHTML = `
@@ -28,8 +34,39 @@ class XiaomiDirectCameraCard extends HTMLElement {
         button:disabled { opacity: .5; }
         button[aria-pressed="true"] { background: var(--error-color); color: white; }
         .status { color: var(--secondary-text-color); font-size: 12px; }
+        .stage { position: relative; }
+        .ptz { position: absolute; left: 10px; bottom: 10px; display: grid;
+          grid-template-columns: repeat(3, 34px); grid-template-rows: repeat(3, 34px);
+          gap: 3px; padding: 6px; border-radius: 14px;
+          background: rgba(0, 0, 0, .42); backdrop-filter: blur(3px); }
+        .ptz[hidden] { display: none; }
+        .ptz-button { display: inline-flex; align-items: center; justify-content: center;
+          width: 34px; height: 34px; padding: 0; border-radius: 50%;
+          border: 1px solid rgba(255, 255, 255, .38); background: rgba(255, 255, 255, .14);
+          color: #fff; touch-action: none; }
+        .ptz-button ha-icon { --mdc-icon-size: 22px; pointer-events: none; }
+        .ptz-button[data-active="true"] { background: var(--primary-color);
+          border-color: var(--primary-color); color: #fff; }
+        .ptz[data-live="false"] .ptz-button { opacity: .5; }
+        .ptz-up { grid-area: 1 / 2; }
+        .ptz-left { grid-area: 2 / 1; }
+        .ptz-right { grid-area: 2 / 3; }
+        .ptz-down { grid-area: 3 / 2; }
+        .ptz-error { position: absolute; left: 0; bottom: calc(100% + 4px); max-width: 260px;
+          padding: 4px 8px; border-radius: 8px; background: rgba(0, 0, 0, .75); color: #fff;
+          font-size: 12px; line-height: 1.3; }
+        .ptz-error:empty { display: none; }
       </style>
-      <div class="video"></div>
+      <div class="stage">
+        <div class="video"></div>
+        <div class="ptz" hidden>
+          <button type="button" class="ptz-button ptz-up" aria-label="Nahoru"><ha-icon icon="mdi:chevron-up"></ha-icon></button>
+          <button type="button" class="ptz-button ptz-left" aria-label="Vlevo"><ha-icon icon="mdi:chevron-left"></ha-icon></button>
+          <button type="button" class="ptz-button ptz-right" aria-label="Vpravo"><ha-icon icon="mdi:chevron-right"></ha-icon></button>
+          <button type="button" class="ptz-button ptz-down" aria-label="Dolů"><ha-icon icon="mdi:chevron-down"></ha-icon></button>
+          <span class="ptz-error" role="status" aria-live="polite"></span>
+        </div>
+      </div>
       <div class="controls">
         <label>Hlasitost poslechu <input type="range" min="0" max="100" value="100" disabled></label>
         <div class="talkback">
@@ -43,6 +80,21 @@ class XiaomiDirectCameraCard extends HTMLElement {
     this._talkback = root.querySelector(".talkback");
     this._button = root.querySelector(".talkback button");
     this._status = root.querySelector(".status");
+    this._ptz = root.querySelector(".ptz");
+    this._ptzError = root.querySelector(".ptz-error");
+    for (const direction of ["up", "down", "left", "right"]) {
+      const button = root.querySelector(`.ptz-${direction}`);
+      button.addEventListener("pointerdown", (event) => this._beginPtz(direction, event));
+      for (const type of ["pointerup", "pointercancel", "pointerleave", "lostpointercapture"]) {
+        button.addEventListener(type, () => this._endPtz());
+      }
+      button.addEventListener("keydown", (event) => {
+        if (event.code !== "Space" && event.code !== "Enter") return;
+        event.preventDefault();
+        if (!event.repeat) this._stepPtz(direction);
+      });
+      this._ptzButtons[direction] = button;
+    }
     this._volumeSlider.addEventListener("input", () => {
       if (this._volumeVideo) this._volumeVideo.volume = this._volumeSlider.valueAsNumber / 100;
     });
@@ -60,7 +112,10 @@ class XiaomiDirectCameraCard extends HTMLElement {
       if (event.code === "Space" || event.code === "Enter") this._release();
     });
     this._visibility = () => {
-      if (document.hidden) this._release();
+      if (document.hidden) {
+        this._release();
+        this._endPtz();
+      }
     };
   }
 
@@ -77,9 +132,15 @@ class XiaomiDirectCameraCard extends HTMLElement {
       this._button.disabled = true;
       this._release();
     }
+    this._ptzEnabled = config.ptz !== false;
+    if (!this._ptzEnabled) {
+      this._ptz.hidden = true;
+      this._endPtz();
+    }
     const cameraConfig = { ...config };
     delete cameraConfig.type;
     delete cameraConfig.push_to_talk;
+    delete cameraConfig.ptz;
     this._audioRequested = config.media?.split(",").some((track) => track.trim() === "audio");
     if (this._audioRequested) {
       // WebRTC Camera checks for audio at loadeddata. With MSE that can be
@@ -120,6 +181,68 @@ class XiaomiDirectCameraCard extends HTMLElement {
       && state?.attributes?.talkback_enabled === true;
     this._button.disabled = !enabled;
     this._status.textContent = enabled ? "Mikrofon C701 je zapnutý v integraci" : "Zapni mikrofon C701 v nastavení integrace";
+    this._syncPtz(state);
+  }
+
+  _syncPtz(state) {
+    const attributes = state?.attributes || {};
+    const directions = Array.isArray(attributes.ptz_directions) ? attributes.ptz_directions : [];
+    const visible = this._ptzEnabled && directions.length > 0 && state?.state !== "unavailable";
+    if (this._ptz.hidden !== !visible) this._ptz.hidden = !visible;
+    this._ptz.setAttribute("data-live", attributes.ptz_enabled === true ? "true" : "false");
+    if (!visible) this._endPtz();
+  }
+
+  _beginPtz(direction, event) {
+    event?.preventDefault?.();
+    if (this._ptz.hidden || !this._hass) return;
+    try { event?.currentTarget?.setPointerCapture?.(event.pointerId); } catch (_) { /* optional */ }
+    this._endPtz();
+    this._ptzButtons[direction]?.setAttribute("data-active", "true");
+    this._stepPtz(direction);
+    // A short hold keeps sending single steps; the camera protocol has no
+    // continuous-move command, so this is the closest to live panning.
+    this._ptzHold = setTimeout(() => {
+      this._ptzRepeat = setInterval(() => this._stepPtz(direction), 260);
+    }, 520);
+  }
+
+  _endPtz() {
+    if (this._ptzHold) clearTimeout(this._ptzHold);
+    if (this._ptzRepeat) clearInterval(this._ptzRepeat);
+    this._ptzHold = undefined;
+    this._ptzRepeat = undefined;
+    for (const button of Object.values(this._ptzButtons)) {
+      button?.setAttribute("data-active", "false");
+    }
+  }
+
+  async _stepPtz(direction) {
+    // One in-flight step at a time: a slow camera must not build a backlog.
+    if (this._ptzBusy || !this._hass || !this._config) return;
+    this._ptzBusy = true;
+    try {
+      await this._hass.callWS({
+        type: "xiaomi_direct_pilot/ptz/step",
+        entity_id: this._config.entity,
+        direction,
+      });
+      this._showPtzError("");
+    } catch (error) {
+      this._showPtzError(error?.message || "Pohyb kamery se nepodařil");
+      this._endPtz();
+    } finally {
+      this._ptzBusy = false;
+    }
+  }
+
+  _showPtzError(message) {
+    if (this._ptzErrorTimer) clearTimeout(this._ptzErrorTimer);
+    this._ptzErrorTimer = undefined;
+    this._ptzError.textContent = message;
+    if (message) {
+      this._ptzErrorTimer = setTimeout(() => { this._ptzError.textContent = ""; }, 4000);
+    }
   }
 
   _bindVolumeIcon() {
@@ -148,6 +271,7 @@ class XiaomiDirectCameraCard extends HTMLElement {
 
   disconnectedCallback() {
     this._release();
+    this._endPtz();
     document.removeEventListener("visibilitychange", this._visibility);
     this._volumeVideo?.removeEventListener("loadeddata", this._volumeSyncHandler);
     this._volumeVideo?.removeEventListener("volumechange", this._volumeSyncHandler);
