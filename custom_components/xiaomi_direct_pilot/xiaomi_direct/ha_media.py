@@ -26,6 +26,11 @@ _TRANSPORT_ERRORS = (CS2Error, TimeoutError, OSError)
 _CAMERA_ERRORS = (AccountError, MediaFormatError, av.FFmpegError, *_TRANSPORT_ERRORS)
 _TALKBACK_DEADMAN_SECONDS = 0.8
 _TALKBACK_MAX_SECONDS = 30
+# Opening a camera session and waiting for the first keyframe measured 3.8 s on
+# the live instance (0.2 s when a session is already up). Holding the session
+# open for a while after the last viewer leaves makes returning to the
+# dashboard, reloading the page or switching tabs cheap.
+_IDLE_GRACE_SECONDS = 45.0
 
 
 class TalkbackError(Exception):
@@ -177,12 +182,14 @@ def _end_queue(queue):
 class LocalMediaSource:
     """Own a loopback HTTP listener. The URL is only handed to HA's worker."""
 
-    def __init__(self, open_video: Callable, *, label="C201", attempts=1, audio=False, talkback=False):
+    def __init__(self, open_video: Callable, *, label="C201", attempts=1, audio=False,
+                 talkback=False, idle_grace=_IDLE_GRACE_SECONDS):
         self._open_video = open_video
         self._label = label
         self._attempts = attempts
         self._audio = audio
         self._talkback = talkback
+        self._idle_grace = idle_grace
         self._runner = None
         self._feed = None
         self._feed_lock = asyncio.Lock()
@@ -204,6 +211,12 @@ class LocalMediaSource:
         self.url = f"http://127.0.0.1:{runner.addresses[0][1]}{path}"
 
     async def close(self):
+        # The producer now outlives its subscribers by the idle grace, so
+        # unloading the integration has to stop it explicitly.
+        feed, self._feed = self._feed, None
+        if feed is not None:
+            feed.task.cancel()
+            await asyncio.gather(feed.task, return_exceptions=True)
         if self._runner is not None:
             runner = self._runner
             self._runner = self.url = None
@@ -310,12 +323,13 @@ class LocalMediaSource:
         try:
             yield queue
         finally:
+            # Do not tear the camera session down here: waiting for the first
+            # keyframe cost 3.8 s when measured against the live instance, and
+            # a reload, a tab switch or a card remount would pay it again. The
+            # producer keeps the session for _IDLE_GRACE_SECONDS and exits by
+            # itself when nobody comes back.
             async with self._feed_lock:
                 feed.subscribers.discard(queue)
-                if not feed.subscribers and feed is self._feed:
-                    self._feed = None
-                    feed.task.cancel()
-                    await asyncio.gather(feed.task, return_exceptions=True)
 
     async def _produce(self, feed):
         last_timestamp = None
@@ -335,19 +349,26 @@ class LocalMediaSource:
                         read = video.read_media if self._audio else video.read
                         loop = asyncio.get_running_loop()
                         video_deadline = loop.time() + 12
-                        while feed.subscribers:
+                        idle_deadline = None
+                        while True:
                             if offset:
                                 frame = replace(frame, timestamp=frame.timestamp + offset)
-                            feed.publish(frame)
+                            if feed.subscribers:
+                                feed.publish(frame)
+                                idle_deadline = None
+                            elif idle_deadline is None:
+                                # Keep reading while nobody watches: stopping
+                                # here would close the session and hand the
+                                # next viewer a cold start.
+                                idle_deadline = loop.time() + self._idle_grace
                             if isinstance(frame, VideoFrame):
                                 last_timestamp = max(last_timestamp, frame.timestamp) if last_timestamp is not None else frame.timestamp
                                 last_arrival = monotonic()
                                 video_deadline = loop.time() + 12
-                            if not feed.subscribers:
+                            if idle_deadline is not None and loop.time() >= idle_deadline:
                                 return
                             async with asyncio.timeout_at(video_deadline):
                                 frame = await read(timeout=12)
-                        return
                 except _TRANSPORT_ERRORS:
                     if feed.talkback_token is not None:
                         await self.stop_talkback(feed.talkback_token)

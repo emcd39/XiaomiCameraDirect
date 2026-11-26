@@ -23,16 +23,20 @@ from .xiaomi_direct.ha_media import LocalMediaSource
 from .xiaomi_direct.h264_video import H264Video
 
 
-# The frontend holds back two HLS parts before it plays, so the part length is
-# most of the delay between the camera and the picture. Shortening it from the
-# one second default brings a step of the PTZ pad close to live.
-LOW_LATENCY_PART = 0.3
-# Home Assistant's own non-low-latency target is 2.0 s and it subtracts 0.1 s
-# to stay off a keyframe boundary. A short part is not enough on its own: when
-# the player drops back to whole segments it waits for a segment, and with the
-# 6 s default that is the 1-5 s swing this camera used to show.
+# The player holds back two HLS parts before it plays, so the part length sets
+# the floor for the delay between the camera and the picture: 0.4 s of hold-back
+# at 0.2 s, 0.6 s at 0.3 s. Segments stay at 2 s so a player that falls back to
+# whole segments does not wait for the 6 s default.
+LOW_LATENCY_PART = 0.2
 LOW_LATENCY_SEGMENT = 2.0
 SEGMENT_ADJUSTER = 0.1
+# ffmpeg probes the input before it can write the first part, and that probe is
+# most of the wait between tapping the card and seeing a picture. The source is
+# a keyframe-first MPEG-TS stream this integration produces itself, so a short
+# probe is enough. An audio track can still show up after the first video
+# packets, so a stream with audio keeps the wider window.
+PROBE_OPTIONS_VIDEO = {"analyzeduration": "300000", "probesize": "262144"}
+PROBE_OPTIONS_AUDIO = {"analyzeduration": "750000", "probesize": "524288"}
 STREAM_DOMAIN = "stream"
 # Mirrors homeassistant.components.stream.const.ATTR_SETTINGS.
 STREAM_SETTINGS_KEY = "settings"
@@ -171,7 +175,8 @@ class DirectCamera(Camera):
         self._attr_supported_features = CameraEntityFeature.STREAM if media else CameraEntityFeature(0)
         self._attr_capability_attributes = {"model_id": model}
         self._attr_extra_state_attributes = {}
-        self._attr_extra_state_attributes["audio_enabled"] = bool(audio_enabled and media is not None)
+        self._audio_stream = bool(audio_enabled and media is not None)
+        self._attr_extra_state_attributes["audio_enabled"] = self._audio_stream
         self._attr_extra_state_attributes["talkback_enabled"] = bool(
             audio_enabled and model == C701_MODEL and media is not None
         )
@@ -239,7 +244,9 @@ class DirectCamera(Camera):
         if stream is not None:
             # This loopback MPEG-TS source starts on a video keyframe and
             # identifies any audio track before sending its first packet.
-            stream.pyav_options.update(analyzeduration="750000", probesize="524288")
+            stream.pyav_options.update(
+                PROBE_OPTIONS_AUDIO if self._audio_stream else PROBE_OPTIONS_VIDEO
+            )
         return stream
 
     async def _create_low_latency_stream(self):

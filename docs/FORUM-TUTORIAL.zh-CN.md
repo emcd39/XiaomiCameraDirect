@@ -148,22 +148,25 @@ camera/stream (WS) ──► hls.js ──► <video>
 ```js
 lowLatencyMode: true,
 backBufferLength: 0,
-liveSyncDuration: 0.9,        // 目标延迟
-liveMaxLatencyDuration: 4,    // 超过 4 秒硬跳
-maxLiveSyncPlaybackRate: 1.3, // 落后时 1.3 倍速追帧
+liveSyncDuration: 0.6,        // 目标延迟（3 个 0.2 秒分片）
+liveMaxLatencyDuration: 3,    // 超过 3 秒硬跳
+maxLiveSyncPlaybackRate: 1.5, // 落后时 1.5 倍速追帧
 ```
 
-集成侧同时把 HLS 从默认的 1 秒分片 / 6 秒分段收紧到 **0.3 秒分片 / 2 秒分段**，只对本集成的相机生效，不会污染全局设置（内部是临时替换后立刻还原，还加了一把锁，两台相机同时建流也不会互相踩）。
+集成侧同时把 HLS 从默认的 1 秒分片 / 6 秒分段收紧到 **0.2 秒分片 / 2 秒分段**，只对本集成的相机生效，不会污染全局设置（内部是临时替换后立刻还原，还加了一把锁，两台相机同时建流也不会互相踩）。
+
+播放器的目标延迟压不过 HA 的 `PART-HOLD-BACK`（2 个分片），所以**分片长度才是地板**：0.3 秒分片最多到 0.6，0.2 秒分片才能到 0.4~0.6。
 
 实测（`chuangmi.camera.029a02`，HA 2026.11.2）：
 
 | 指标 | 默认 | 现在 |
 |---|---|---|
-| `PART-TARGET` | 1.000 | **0.300** |
-| `PART-HOLD-BACK`（≈延迟） | 2.000 | **0.600** |
+| `PART-TARGET` | 1.000 | **0.200** |
+| `PART-HOLD-BACK`（≈地板） | 2.000 | **0.400** |
+| `liveSyncDuration` | 播放器默认（漂到 3~5 s） | **0.6** |
 | `EXT-X-TARGETDURATION` | 6 | **2** |
 
-体感稳定在 **0.6~1.5 秒**，最坏情况等一个 2 秒分段。你家的数字不一定一样，WiFi 弱、摄像头码率高会更差。
+体感稳定在 **1 秒左右**，最坏情况等一个 2 秒分段。你家的数字不一定一样，WiFi 弱、摄像头码率高会更差。
 
 **为什么不走 WebRTC**：这个集成的媒体中继是 MPEG-TS over HTTP，监听在 `127.0.0.1` 的随机端口 + 随机 token。HA 内置的 go2rtc 只认 `rtsp:`/`rtmp:` 开头的源，`camera/webrtc/offer` 会直接回 `Camera does not support WebRTC`。装 WebRTC Camera 也没用，它自带的 go2rtc 一样拉不到这个地址，端口和 token 每次重启都变，写不死。
 

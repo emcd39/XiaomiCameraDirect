@@ -1,11 +1,14 @@
 const HLS_CONFIG = {
   // Low-latency HLS, held to a fixed sync distance instead of the player's
-  // default. The card ships hls.js because the frontend does not expose it.
+  // default. Home Assistant publishes parts of 0.2 s and holds back two of
+  // them, so 0.6 s is three parts behind live: tight enough to feel live and
+  // still one part of headroom for Wi-Fi jitter. 1.5x catches up quickly after
+  // a stall, which is what makes a lowered buffer safe.
   lowLatencyMode: true,
   backBufferLength: 0,
-  liveSyncDuration: 0.9,
-  liveMaxLatencyDuration: 4,
-  maxLiveSyncPlaybackRate: 1.3,
+  liveSyncDuration: 0.6,
+  liveMaxLatencyDuration: 3,
+  maxLiveSyncPlaybackRate: 1.5,
   enableWorker: true,
 };
 // Fallback for a frontend without hassUrl; normally resolved against it so a

@@ -85,27 +85,36 @@ camera/stream (WS) ──► hls.js ──► <video>
 ```js
 lowLatencyMode: true,
 backBufferLength: 0,
-liveSyncDuration: 0.9,        // 目标延迟
-liveMaxLatencyDuration: 4,    // 超过 4 秒硬跳
-maxLiveSyncPlaybackRate: 1.3, // 落后时 1.3 倍速追帧
+liveSyncDuration: 0.6,        // 目标延迟（= 3 个 0.2 秒分片）
+liveMaxLatencyDuration: 3,    // 超过 3 秒硬跳
+maxLiveSyncPlaybackRate: 1.5, // 落后时 1.5 倍速追帧
 ```
 
-集成侧同时把流本身从默认的 1 秒分片 / 6 秒分段收紧到 **0.3 秒分片 / 2 秒分段**
+集成侧同时把流本身从默认的 1 秒分片 / 6 秒分段收紧到 **0.2 秒分片 / 2 秒分段**
 （`camera.py` 顶部 `LOW_LATENCY_PART`、`LOW_LATENCY_SEGMENT`）。这两项改在
 `create_stream` 内部临时替换全局 `StreamSettings`，建完立即还原，**只影响本集成的
 相机**；若你在 `configuration.yaml` 里设了更小的值，不会被反向拉高。替换过程用一把
 锁串行，避免两台相机同时建流时互相把对方的设置还原掉。
 
+播放器的目标延迟不能低于 HA 的 `PART-HOLD-BACK`（= 2 个分片），所以 **分片长度
+才是延迟的地板**：0.3 秒分片最多压到 0.6，0.2 秒分片才能压到 0.4~0.6。
+
 实测（`chuangmi.camera.029a02`，HA 2026.11.2）：
 
-| 指标 | 改前 | 改后 |
-|---|---|---|
-| `PART-TARGET` | 1.000 | **0.300** |
-| `PART-HOLD-BACK`（≈延迟） | 2.000 | **0.600** |
-| `EXT-X-TARGETDURATION` | 6 | **2** |
-| 关键帧间隔 | 0.9–1.2 s（本来就够密） | 同左 |
+| 指标 | 改前 | 0.3 秒分片 | 现在 |
+|---|---|---|---|
+| `PART-TARGET` | 1.000 | 0.300 | **0.200** |
+| `PART-HOLD-BACK`（≈地板） | 2.000 | 0.600 | **0.400** |
+| `liveSyncDuration` | 播放器默认（漂到 3~5 s） | 0.9 | **0.6** |
+| `EXT-X-TARGETDURATION` | 6 | 2 | **2** |
 
-体感上稳定在 **0.6~1.5 秒**，最坏情况等一个 2 秒分段，不会再出现 5 秒跳变。
+分片结构实测为纯 0.2 秒（每段 10 个，无长尾碎块），`TARGETDURATION` 仍是 2，退化成
+整段播放时不会再有 5 秒跳变。
+
+体感上稳定在 **1 秒左右**，最坏情况等一个 2 秒分段。
+
+另外 ffmpeg 的输入探测从 750 ms 降到 300 ms（`PROBE_OPTIONS_VIDEO`）：开流到出第一帧
+的等待少了一半左右。带音频的流保持原来的 750 ms，因为音轨可能晚于视频包出现。
 
 **为什么不走 WebRTC**：本集成的媒体中继是 **MPEG-TS over HTTP**
 （`http://127.0.0.1:随机端口/随机 token`），而 HA 内置的 go2rtc provider 只认

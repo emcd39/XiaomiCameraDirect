@@ -48,11 +48,14 @@ only needs the entity IDs from your HA. Set `ptz: false` to hide the D-pad and
 ### Stream latency
 
 The card plays low-latency HLS with a fixed sync distance (`liveSyncDuration`
-0.9 s, `maxLiveSyncPlaybackRate` 1.3) instead of the player default, and the
+0.6 s, `maxLiveSyncPlaybackRate` 1.5) instead of the player default, and the
 integration shortens the stream itself from 1 s parts and 6 s segments to
-0.3 s parts and 2 s segments. A camera sends a keyframe about once a second,
-so a short part is enough; the long segment was what turned a small stall into
-a five second jump while the player waited for a whole segment.
+0.2 s parts and 2 s segments. Home Assistant holds back two parts, so the part
+length is the floor under the player target: 0.3 s parts allow 0.6 s at best,
+0.2 s parts allow 0.4 s. The 2 s segment is what keeps a stall from turning
+into a five second jump while the player waits for a whole segment. The input
+probe is 300 ms instead of 750 ms, which halves the wait before the first
+frame; streams with audio keep the longer window.
 
 The direct integration runs inside HA Core. The Go gateway is available
 separately for diagnostics, reference testing and standalone deployments.

@@ -182,8 +182,9 @@ test("streaming asks for the camera URL and starts hls.js with the low latency c
   assert.equal(hls.source, "http://ha.local/api/hls/tok/master_playlist.m3u8");
   assert.equal(hls.media, elements.get("video"));
   assert.equal(hls.config.lowLatencyMode, true);
-  assert.equal(hls.config.liveSyncDuration, 0.9);
-  assert.equal(hls.config.maxLiveSyncPlaybackRate, 1.3);
+  assert.equal(hls.config.liveSyncDuration, 0.6);
+  assert.equal(hls.config.maxLiveSyncPlaybackRate, 1.5);
+  assert.equal(hls.config.liveMaxLatencyDuration, 3);
 
   hls.emit("fragBuffered", {});
   assert.equal(elements.get(".overlay").hidden, true);
