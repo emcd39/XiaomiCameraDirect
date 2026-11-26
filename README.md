@@ -43,7 +43,9 @@ The optional dashboard card is bundled with the integration and does its own
 playback: it ships hls.js next to the card, so no WebRTC Camera frontend is
 needed. The example [dashboard](docs/examples/lovelace-xiaomi-direct.json)
 only needs the entity IDs from your HA. Set `ptz: false` to hide the D-pad and
-`latency_indicator: false` to hide the second counter in the corner.
+`latency_indicator: false` to hide the second counter in the corner, and
+`latency: 0.9` to raise the player target when a weak link makes 0.6 s stutter
+(0.3–3 s, default 0.6).
 
 ### Stream latency
 

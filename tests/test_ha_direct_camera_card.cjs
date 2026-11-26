@@ -190,6 +190,30 @@ test("streaming asks for the camera URL and starts hls.js with the low latency c
   assert.equal(elements.get(".overlay").hidden, true);
 });
 
+test("the latency option overrides the player target", async () => {
+  const { card, calls } = await setUpCard({ latency: 1.2 });
+  const first = FakeHls.instances.at(-1);
+  assert.equal(first.config.liveSyncDuration, 1.2);
+  assert.equal(first.config.maxLiveSyncPlaybackRate, 1.3);
+
+  card.setConfig({ entity: "camera.test_direct", latency: 0.45 });
+  await flush();
+  assert.equal(FakeHls.instances.length, 2, "changing the target restarts the player");
+  assert.equal(FakeHls.instances.at(-1).config.liveSyncDuration, 0.45);
+  assert.equal(first.destroyed, true);
+  assert.equal(calls.filter((call) => call.type === "camera/stream").length, 2);
+});
+
+test("the latency option is clamped to a value that can still play", async () => {
+  const { elements } = await setUpCard({ latency: 0.01 });
+  assert.equal(FakeHls.instances.at(-1).config.liveSyncDuration, 0.3);
+
+  const { elements: other } = await setUpCard({ latency: "nonsense" });
+  assert.equal(FakeHls.instances.at(-1).config.liveSyncDuration, 0.6);
+  assert.ok(elements.get(".latency"));
+  assert.ok(other.get(".latency"));
+});
+
 test("the card injects hls.js itself when the frontend has no global", async () => {
   const { head, elements } = await setUpCard({}, { withHls: false });
   assert.equal(head.children.length, 1);

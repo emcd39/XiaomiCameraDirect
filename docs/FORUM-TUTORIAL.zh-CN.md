@@ -114,6 +114,7 @@ entity: camera.xiaomi_c701_direct
 name: 客厅摄像头
 ptz: true
 latency_indicator: true
+latency: 0.6
 ```
 
 | 选项 | 默认 | 作用 |
@@ -122,6 +123,7 @@ latency_indicator: true
 | `name` | 实体名 | 卡片标题 |
 | `ptz` | `true` | 设 `false` 隐藏方向盘 |
 | `latency_indicator` | `true` | 设 `false` 隐藏右上角延迟秒数 |
+| `latency` | `0.6` | 播放器目标延迟（秒），0.3~3；调低更实时，WiFi 差容易卡 |
 
 用起来的实际手感：
 

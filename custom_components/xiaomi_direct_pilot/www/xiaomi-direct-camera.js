@@ -1,19 +1,34 @@
 const HLS_CONFIG = {
-  // Low-latency HLS, held to a fixed sync distance instead of the player's
-  // default. Home Assistant publishes parts of 0.2 s and holds back two of
-  // them, so 0.6 s is three parts behind live: tight enough to feel live and
-  // still one part of headroom for Wi-Fi jitter. 1.5x catches up quickly after
-  // a stall, which is what makes a lowered buffer safe.
+  // Low-latency HLS; the sync distance comes from hlsConfig() so the card can
+  // offer a `latency` option without the player drifting to its own default.
   lowLatencyMode: true,
   backBufferLength: 0,
-  liveSyncDuration: 0.6,
-  liveMaxLatencyDuration: 3,
-  maxLiveSyncPlaybackRate: 1.5,
   enableWorker: true,
 };
 // Fallback for a frontend without hassUrl; normally resolved against it so a
 // reverse proxy under a path prefix still finds the player.
 const HLS_SCRIPT = "/xiaomi-direct/hls.light.min.js";
+// The floor is Home Assistant's hold-back of two parts (0.4 s at the 0.2 s
+// parts the integration sets), so anything below that stalls.
+const LATENCY_TARGET = 0.6;
+const LATENCY_MIN = 0.3;
+const LATENCY_MAX = 3;
+
+function hlsConfig(target) {
+  return {
+    ...HLS_CONFIG,
+    liveSyncDuration: target,
+    liveMaxLatencyDuration: Math.max(target * 5, 3),
+    // Catch up faster when the target is tight.
+    maxLiveSyncPlaybackRate: target < 0.8 ? 1.5 : 1.3,
+  };
+}
+
+function clampLatency(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds)) return LATENCY_TARGET;
+  return Math.min(LATENCY_MAX, Math.max(LATENCY_MIN, seconds));
+}
 const RETRY_DELAY = 6000;
 const PTZ_HOLD_DELAY = 520;
 const PTZ_HOLD_INTERVAL = 260;
@@ -44,6 +59,7 @@ class XiaomiDirectCameraCard extends HTMLElement {
     this._ptzEnabled = true;
     this._ptzLive = undefined;
     this._showLatency = true;
+    this._latencyTarget = LATENCY_TARGET;
     this._ptzButtons = {};
     this._ptzBusy = false;
     this._ptzHold = undefined;
@@ -151,14 +167,17 @@ class XiaomiDirectCameraCard extends HTMLElement {
     // Switching the entity in the card editor must replace the player instead
     // of leaving the previous camera on screen.
     const entityChanged = this._config?.entity !== config.entity;
+    const target = clampLatency(config.latency ?? LATENCY_TARGET);
+    const latencyChanged = this._config !== undefined && this._latencyTarget !== target;
     this._config = { ...config };
+    this._latencyTarget = target;
     this._ptzEnabled = config.ptz !== false;
     this._showLatency = config.latency_indicator !== false;
     if (!this._ptzEnabled) {
       this._ptz.hidden = true;
       this._endPtz();
     }
-    if (entityChanged) {
+    if (entityChanged || latencyChanged) {
       this._showPtzError("");
       this._overlay.textContent = "正在连接…";
       this._maybeStart(true);
@@ -207,7 +226,7 @@ class XiaomiDirectCameraCard extends HTMLElement {
       });
       const Hls = await this._ensureHls();
       if (!this.isConnected) return;
-      const hls = new Hls(HLS_CONFIG);
+      const hls = new Hls(hlsConfig(this._latencyTarget));
       hls.on(Hls.Events.ERROR, (_event, data) => this._onHlsError(Hls, data));
       hls.on(Hls.Events.FRAG_BUFFERED, () => { this._overlay.hidden = true; });
       hls.loadSource(new URL(url, window.location.origin).toString());
